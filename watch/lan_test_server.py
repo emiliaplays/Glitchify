@@ -75,9 +75,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 sent += len(data)
                 time.sleep(max(0, started + (block + 1) / 10 - time.monotonic()))
-        except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
+        except (ConnectionError, TimeoutError, socket.timeout):
             pass
         print(f'Synthetic WLAN test finished: {sent}/{SIZE} bytes.', flush=True)
+
+
+class QuietHTTPServer(HTTPServer):
+    def handle_error(self, request, client_address):
+        print('Test connection closed before completion.', flush=True)
 
 
 def main():
@@ -86,7 +91,7 @@ def main():
     args = parser.parse_args()
     if not allowed_address(args.bind):
         parser.error('Bind to one RFC1918 private IPv4 interface, not all interfaces.')
-    with HTTPServer((args.bind, 8765), Handler) as server:
+    with QuietHTTPServer((args.bind, 8765), Handler) as server:
         server.timeout = 1
         server.expires_at = time.monotonic() + 300
         print('WLAN synthetic-audio server ready for five minutes; one request at a time.', flush=True)
