@@ -1,4 +1,4 @@
-name: Watch prototype (unsigned)
+name: Watch audio route prototype (unsigned)
 on:
   workflow_dispatch:
   push:
@@ -40,10 +40,11 @@ jobs:
             --output /tmp/Glitchify-base.ipa
           python3 watch/package_probe.py --base /tmp/Glitchify-base.ipa \
             --watch-app watch/build/Build/Products/Release-watchos/GlitchifyWatch.app \
-            --output watch/dist/Glitchify-1.1-speaker-probe-unsigned.ipa
+            --omit-phone-extensions \
+            --output watch/dist/Glitchify-1.1-stream-route-probe-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Glitchify-watch-speaker-probe-unsigned
+          name: Glitchify-watch-stream-route-probe-unsigned
           path: watch/dist/
           if-no-files-found: error
           retention-days: 14
