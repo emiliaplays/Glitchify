@@ -1,4 +1,4 @@
-name: Watch paired phone audio relay test (unsigned)
+name: Watch continuous phone audio relay test (unsigned)
 on:
   workflow_dispatch:
   push:
@@ -31,7 +31,7 @@ jobs:
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
             watch/PhonePCMCoreTests.c -o /tmp/phone-pcm-tests
           /tmp/phone-pcm-tests
-          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+          clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined \
             watch/PhoneRelayCoreTests.c -o /tmp/phone-relay-tests
           /tmp/phone-relay-tests
       - name: Compile opt-in phone output observer
@@ -71,7 +71,7 @@ jobs:
             --output watch/dist/Glitchify-1.1-phone-relay-probe-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Glitchify-watch-phone-relay-probe-unsigned
+          name: Glitchify-watch-phone-relay-v2-unsigned
           path: watch/dist/
           if-no-files-found: error
           retention-days: 14
