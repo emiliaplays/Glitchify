@@ -1,0 +1,57 @@
+name: Watch prototype (unsigned)
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/watch-v1.1]
+    paths: ['watch/**', '.github/workflows/watch-prototype.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          brew install xcodegen
+          xcodegen --version
+      - name: Packaging checks
+        run: python3 -m unittest discover -s watch -p 'test_*.py' -v
+      - name: Generate native watchOS project
+        run: |
+          python3 watch/prepare.py
+          xcodegen generate --spec watch/project.yml
+      - name: Compile both Watch device architectures
+        run: |
+          set -o pipefail
+          xcodebuild -project watch/GlitchifyWatch.xcodeproj -scheme GlitchifyWatch \
+            -configuration Release -sdk watchos -destination 'generic/platform=watchOS' \
+            -derivedDataPath watch/build CODE_SIGNING_ALLOWED=NO \
+            ARCHS='arm64_32 arm64' ONLY_ACTIVE_ARCH=NO build | tee watch-build.log
+      - name: Embed diagnostic in a copy of v1.0.0
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/emiliaplays/Glitchify/releases/download/v1.0.0/Glitchify.ipa \
+            --output /tmp/Glitchify-base.ipa
+          python3 watch/package_probe.py --base /tmp/Glitchify-base.ipa \
+            --watch-app watch/build/Build/Products/Release-watchos/GlitchifyWatch.app \
+            --output watch/dist/Glitchify-1.1-speaker-probe-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glitchify-watch-speaker-probe-unsigned
+          path: watch/dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watch-build-diagnostics
+          path: watch-build.log
+          if-no-files-found: ignore
+          retention-days: 7
