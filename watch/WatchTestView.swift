@@ -17,23 +17,31 @@ struct WatchTestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Glitchify")
                         .font(.title3.bold())
-                    Text("WLAN-Audio: Musiktest")
+                    Text("Musik vom iPhone")
                         .font(.headline)
                         .foregroundStyle(.cyan)
                 }
 
-                Text("Glitchify auf dem iPhone neu öffnen und Musik starten. Beide Apps für diesen 20-Sekunden-Test offen lassen.")
+                Text("Glitchify auf dem iPhone öffnen und Musik starten. Beide Geräte müssen im selben WLAN sein.")
                     .font(.footnote)
 
                 TextField("iPhone: IPv4-Adresse", text: $phoneHost).disabled(lanAudio.isRunning)
                 Button {
                     lanAudio.start(host: phoneHost, phone: true)
                 } label: {
-                    Label("iPhone-Musik testen", systemImage: "music.note")
+                    Label("Musik empfangen", systemImage: "music.note")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(lanAudio.isRunning || streamAudio.isRunning || audio.isPresenting)
-                Text("Lokale Testkopplung nötig. Das iPhone bleibt die Musikquelle; Hintergrundbetrieb ist noch nicht bestätigt.")
+                if lanAudio.isRunning {
+                    Button("Wiedergabe stoppen", role: .cancel, action: lanAudio.stop)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(lanAudio.status).foregroundStyle(lanAudio.failed ? Color.orange : Color.primary)
+                    Text(lanAudio.route)
+                    Text(lanAudio.detail).foregroundStyle(.secondary)
+                }.font(.caption2).accessibilityElement(children: .combine)
+                Text("Watch-App offen lassen. Das iPhone bleibt die Musikquelle. Hintergrundbetrieb wird noch getestet.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Divider()
                 Text("Synthetischer WLAN-Test").font(.headline)
@@ -49,16 +57,6 @@ struct WatchTestView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
                 .disabled(lanAudio.isRunning || streamAudio.isRunning || audio.isPresenting)
-                if lanAudio.isRunning {
-                    Button("WLAN-Test stoppen", role: .cancel, action: lanAudio.stop)
-                }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(lanAudio.status).foregroundStyle(lanAudio.failed ? Color.orange : Color.primary)
-                    Text(lanAudio.route)
-                    Text(lanAudio.detail).foregroundStyle(.secondary)
-                }
-                .font(.caption2)
-                .accessibilityElement(children: .combine)
                 Text("Testserver und Watch müssen im selben WLAN sein. App offen lassen; der Test endet nach 20 Sekunden.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Divider()

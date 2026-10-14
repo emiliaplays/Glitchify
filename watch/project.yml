@@ -44,7 +44,7 @@ targets:
         WKCompanionAppBundleIdentifier: com.spotify.client
         WKRunsIndependentlyOfCompanionApp: true
         WKWatchOnly: false
-        GlitchifyPrototypeRevision: 1.1-phone-relay-probe.1
+        GlitchifyPrototypeRevision: 1.1-phone-relay-probe.2
         NSLocalNetworkUsageDescription: Empfängt den von dir gestarteten Audiotest über dein WLAN.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

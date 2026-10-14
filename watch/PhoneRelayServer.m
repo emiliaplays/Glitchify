@@ -1,4 +1,4 @@
-// Local, explicitly paired, finite TLS relay. No account/DRM or microphone access.
+// Local, explicitly paired TLS relay. No account/DRM or microphone access.
 #import "PhoneRelayServer.h"
 #import <Network/Network.h>
 #import <Security/Security.h>
@@ -15,10 +15,12 @@ static unsigned producerEpoch;
 static atomic_ullong dropped, copied;
 static nw_listener_t listener;
 static nw_connection_t client;
+static dispatch_queue_t relayQueue;
 static NSString *serverStatus = @"not_configured", *token, *address;
 static NSMutableData *requestBytes;
 static unsigned sentChunks, generation;
-static double streamStart;
+static unsigned long long skipped, underflow;
+static double streamStart, nextSend, lastSend;
 static bool authenticated;
 
 void GRObserve(GPFormat format, const GPBuffer *buffers, uint32_t frames) {
@@ -38,7 +40,7 @@ void GRPause(void) {
     atomic_fetch_add(&epoch, 1);
 }
 
-static void closeClient(NSString *status) { // main queue only
+static void closeClient(NSString *status) { // relay queue only
     atomic_store(&capturing, false);
     atomic_store(&playing, false);
     atomic_fetch_add(&epoch, 1);
@@ -54,28 +56,54 @@ static void closeClient(NSString *status) { // main queue only
 
 static void sendData(NSData *data, unsigned run, void (^done)(void)) {
     if (!client || generation != run) return;
-    dispatch_data_t bytes = dispatch_data_create(data.bytes, data.length, dispatch_get_main_queue(), ^{ (void)data; });
+    dispatch_data_t bytes = dispatch_data_create(data.bytes, data.length, relayQueue, ^{ (void)data; });
     nw_connection_send(client, bytes, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false, ^(nw_error_t error) {
         if (generation != run) return;
         if (error) { closeClient(@"connection_ended"); return; }
+        lastSend = NSProcessInfo.processInfo.systemUptime;
         done();
+    });
+}
+
+static void checkProgress(unsigned run) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), relayQueue, ^{
+        if (generation != run || !client || !authenticated) return;
+        double now = NSProcessInfo.processInfo.systemUptime;
+        if (now - lastSend > 8) { closeClient(@"network_stalled"); return; }
+        if (now - streamStart > 12 * 3600) { closeClient(@"session_limit_reached"); return; }
+        checkProgress(run);
     });
 }
 
 static void sendChunk(unsigned run) {
     if (generation != run || !client || !authenticated) return;
-    if (sentChunks == 200) { closeClient(@"twenty_second_test_complete"); return; }
     double elapsed = NSProcessInfo.processInfo.systemUptime - streamStart;
-    if (elapsed > 27 || atomic_load(&dropped)) { closeClient(@"source_or_network_overrun"); return; }
+    if (elapsed > 12 * 3600) { closeClient(@"session_limit_reached"); return; }
     int16_t samples[2400] = {0};
-    if (atomic_load(&playing)) gr_read(&ring, samples, 2400);
-    else gr_discard(&ring);
-    NSData *data = [NSData dataWithBytes:samples length:sizeof(samples)];
+    if (atomic_load(&playing)) {
+        skipped += gr_trim(&ring, 7200);
+        underflow += 2400 - gr_read(&ring, samples, 2400);
+    } else gr_discard(&ring);
+    // HTTP chunk boundaries are removed by URLSession before PCM delivery.
+    NSMutableData *data = [NSMutableData dataWithBytes:"12c0\r\n" length:6];
+    [data appendBytes:samples length:sizeof(samples)];
+    [data appendBytes:"\r\n" length:2];
     ++sentChunks;
     sendData(data, run, ^{
-        double due = streamStart + sentChunks * 0.1 - NSProcessInfo.processInfo.systemUptime;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fmax(0, due) * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ sendChunk(run); });
+        double now = NSProcessInfo.processInfo.systemUptime;
+        nextSend = fmax(nextSend + 0.1, now);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((nextSend - now) * NSEC_PER_SEC)),
+                       relayQueue, ^{ sendChunk(run); });
+    });
+}
+
+static void watchDisconnect(unsigned run) {
+    nw_connection_receive(client, 1, 1, ^(dispatch_data_t data, nw_content_context_t context, bool complete, nw_error_t error) {
+        (void)context;
+        if (generation != run) return;
+        if (error || complete) { closeClient(@"connection_ended"); return; }
+        if (data && dispatch_data_get_size(data)) { closeClient(@"request_rejected"); return; }
+        watchDisconnect(run);
     });
 }
 
@@ -126,14 +154,17 @@ static void receiveRequest(unsigned run) {
             receiveRequest(run); return;
         }
         if (!acceptRequest(requestBytes)) { closeClient(@"request_rejected"); return; }
-        authenticated = true; requestBytes = nil; sentChunks = 0;
+        authenticated = true; requestBytes = nil; sentChunks = 0; skipped = 0; underflow = 0;
         atomic_store(&dropped, 0); atomic_store(&copied, 0); atomic_store(&playing, false);
         atomic_fetch_add(&epoch, 1); gr_discard(&ring);
         atomic_store_explicit(&capturing, true, memory_order_release);
         serverStatus = @"streaming";
-        NSData *header = [@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 960000\r\nX-Glitchify-Format: pcm_s16le_24000_mono\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        NSData *header = [@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nX-Glitchify-Mode: live\r\nX-Glitchify-Format: pcm_s16le_24000_mono\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
             dataUsingEncoding:NSASCIIStringEncoding];
         streamStart = NSProcessInfo.processInfo.systemUptime;
+        nextSend = lastSend = streamStart;
+        watchDisconnect(run);
+        checkProgress(run);
         sendData(header, run, ^{ sendChunk(run); });
     });
 }
@@ -174,6 +205,8 @@ bool GRStartServer(void) {
     sec_identity_t local = identity ? sec_identity_create(identity) : nil;
     CFRelease(imported);
     if (!local) { serverStatus = @"identity_rejected"; return false; }
+    relayQueue = dispatch_queue_create("app.glitchify.audio-relay", dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
     nw_parameters_t parameters = nw_parameters_create_secure_tcp(^(nw_protocol_options_t tls) {
         sec_protocol_options_t security = nw_tls_copy_sec_protocol_options(tls);
         sec_protocol_options_set_local_identity(security, local);
@@ -183,7 +216,7 @@ bool GRStartServer(void) {
     nw_parameters_set_include_peer_to_peer(parameters, false);
     listener = nw_listener_create_with_port("8766", parameters);
     if (!listener) { serverStatus = @"listener_failed"; return false; }
-    nw_listener_set_queue(listener, dispatch_get_main_queue());
+    nw_listener_set_queue(listener, relayQueue);
     nw_listener_set_state_changed_handler(listener, ^(nw_listener_state_t state, nw_error_t error) {
         (void)error;
         if (state == nw_listener_state_ready) { serverStatus = @"ready"; address = wifiAddress(); }
@@ -193,7 +226,7 @@ bool GRStartServer(void) {
         if (client) { nw_connection_cancel(incoming); return; }
         client = incoming; unsigned run = ++generation; requestBytes = [NSMutableData data];
         authenticated = false;
-        nw_connection_set_queue(incoming, dispatch_get_main_queue());
+        nw_connection_set_queue(incoming, relayQueue);
         nw_connection_set_state_changed_handler(incoming, ^(nw_connection_state_t state, nw_error_t error) {
             (void)error;
             if (run != generation) return;
@@ -201,18 +234,21 @@ bool GRStartServer(void) {
             if (state == nw_connection_state_failed || state == nw_connection_state_cancelled) closeClient(@"connection_ended");
         });
         nw_connection_start(incoming);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), relayQueue, ^{
             if (run == generation && !authenticated) closeClient(@"authentication_timeout");
         });
     });
-    nw_listener_start(listener); serverStatus = @"starting";
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 170 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        closeClient(@"test_window_expired"); nw_listener_cancel(listener); listener = nil;
-    });
+    serverStatus = @"starting"; nw_listener_start(listener);
     return true;
 }
 NSDictionary *GRStatus(void) {
-    return @{@"state": serverStatus, @"host": address ?: @"", @"chunks": @(sentChunks),
-        @"frames": @(atomic_load(&copied)), @"dropped": @(atomic_load(&dropped)),
-        @"capturing": @(atomic_load(&capturing)), @"playing": @(atomic_load(&playing))};
+    __block NSDictionary *result;
+    void (^read)(void) = ^{
+        result = @{@"state": serverStatus, @"host": address ?: @"", @"chunks": @(sentChunks),
+            @"frames": @(atomic_load(&copied)), @"dropped": @(atomic_load(&dropped)),
+            @"skipped": @(skipped), @"underflow": @(underflow),
+            @"capturing": @(atomic_load(&capturing)), @"playing": @(atomic_load(&playing))};
+    };
+    if (relayQueue) dispatch_sync(relayQueue, read); else read();
+    return result;
 }

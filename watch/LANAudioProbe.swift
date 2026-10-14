@@ -3,10 +3,14 @@ import Combine
 import Foundation
 
 private final class LANTransfer: NSObject, URLSessionDataDelegate {
-    let buffer = LANPCMBuffer()
+    let buffer: LANPCMBuffer
     private var accepted = false // serial URLSession delegate queue only
     let pairing: PhoneRelayPairing?
-    init(pairing: PhoneRelayPairing? = nil) { self.pairing = pairing; super.init() }
+    init(pairing: PhoneRelayPairing? = nil) {
+        self.pairing = pairing
+        self.buffer = LANPCMBuffer(continuous: pairing != nil)
+        super.init()
+    }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -23,7 +27,8 @@ private final class LANTransfer: NSObject, URLSessionDataDelegate {
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              http.expectedContentLength == Int64(LANPCMBuffer.byteLimit),
+              (pairing == nil ? http.expectedContentLength == Int64(LANPCMBuffer.byteLimit)
+                : http.expectedContentLength == -1 && http.value(forHTTPHeaderField: "X-Glitchify-Mode") == "live"),
               http.value(forHTTPHeaderField: "X-Glitchify-Format") == LANPCMBuffer.format,
               http.mimeType == "application/octet-stream" else {
             buffer.finish(error: "Server liefert kein passendes Testaudio.")
@@ -58,7 +63,7 @@ private final class LANAudioResources {
     deinit { player.stop(); engine.stop() }
 }
 
-/// Foreground, synthetic-audio LAN test. No Spotify capture or account access.
+/// Foreground Watch receiver for synthetic tests or locally paired iPhone audio.
 @MainActor
 final class LANAudioProbe: ObservableObject {
     @Published private(set) var isRunning = false
@@ -186,7 +191,7 @@ final class LANAudioProbe: ObservableObject {
         config.urlCredentialStorage = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 8
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForResource = phonePairing == nil ? 30 : 12 * 3600
         config.allowsCellularAccess = false
         config.waitsForConnectivity = false
         let delegateQueue = OperationQueue()
@@ -199,8 +204,8 @@ final class LANAudioProbe: ObservableObject {
         let task = session.dataTask(with: urlRequest)
         request = task
         lastArrival = Date()
-        deadline = Date().addingTimeInterval(30)
-        status = "Verbinde mit dem WLAN-Testserver …"
+        deadline = Date().addingTimeInterval(phonePairing == nil ? 30 : 12 * 3600)
+        status = phonePairing == nil ? "Verbinde mit dem WLAN-Testserver …" : "Verbinde mit dem iPhone …"
         task.resume()
         poll = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -255,10 +260,11 @@ final class LANAudioProbe: ObservableObject {
         }
         detail = "Empfangen: \(snapshot.received / 1000) kB · Gespielt: \(playedSamples / 24_000) s\n"
             + (startedBeforeTransferFinished ? "Start während der Übertragung bestätigt." : "Warte auf Audio …")
+        if snapshot.skipped > 0 { detail += "\nNach WLAN-Verzögerung neu synchronisiert." }
         let final = transfer.buffer.snapshot()
         if final.finished, final.queued == 0, queued == 0 {
-            let verified = startedBeforeTransferFinished && playedSamples == 480_000
-            finish(id, verified ? "WLAN-Test beendet." : "Fortlaufende Wiedergabe nicht bestätigt.", failed: !verified)
+            let verified = startedBeforeTransferFinished && (phonePairing != nil ? playedSamples > 0 : playedSamples == 480_000)
+            finish(id, verified ? "WLAN-Audio beendet." : "Fortlaufende Wiedergabe nicht bestätigt.", failed: !verified)
         }
     }
 

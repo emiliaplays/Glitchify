@@ -39,6 +39,35 @@ import Foundation
             _ = tooLong.take(maxBytes: 4800)
         }
         precondition(!tooLong.append(Data([1, 2])))
+        let live = LANPCMBuffer(continuous: true)
+        for _ in 0..<1200 {
+            precondition(live.append(Data(count: 4800)))
+            precondition(live.take(maxBytes: 4800).count == 4800)
+        }
+        precondition(live.snapshot().received > LANPCMBuffer.byteLimit)
+        live.finish(error: nil)
+        precondition(live.snapshot().failure == nil)
+        precondition(!live.append(Data([1, 2])))
+
+        // Odd network fragments must preserve sample alignment after a backlog trim.
+        let late = LANPCMBuffer(continuous: true)
+        let pattern = Data((0..<100_000).map { UInt8($0 % 251) })
+        precondition(late.append(Data(pattern.prefix(3))))
+        precondition(late.append(Data(pattern.dropFirst(3))))
+        let lateState = late.snapshot()
+        precondition(lateState.queued == 24_000 && lateState.skipped == 76_000)
+        precondition(late.take(maxBytes: 100_000) == Data(pattern.suffix(24_000)))
+        late.finish(error: nil)
+        precondition(late.snapshot().failure == nil)
+        let broken = LANPCMBuffer(continuous: true)
+        precondition(broken.append(Data([1])))
+        broken.finish(error: nil)
+        precondition(broken.snapshot().failure != nil)
+        let errored = LANPCMBuffer(continuous: true)
+        errored.finish(error: "TLS identity rejected")
+        errored.finish(error: "Cancelled")
+        precondition(errored.snapshot().failure == "TLS identity rejected")
         print("PASS: LAN endpoint restrictions, fragmentation, overflow, finite completion, late/oversize data")
+        print("PASS: two-minute live stream, bounded resynchronization, sample alignment and first error")
     }
 }

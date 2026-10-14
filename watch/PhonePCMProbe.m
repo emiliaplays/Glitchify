@@ -24,6 +24,7 @@ _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "Render flags must be lock free");
 typedef OSStatus (*UnitCall)(AudioUnit);
 static UnitCall previousStart, previousStop, previousDispose;
 static atomic_bool enabled;
+static bool relayEnabled;
 static atomic_ullong startCalls, stopCalls, disposeCalls, rejectedUnits, listenerErrors;
 static pthread_mutex_t control = PTHREAD_MUTEX_INITIALIZER;
 static NSString *installStatus = @"not_started";
@@ -335,22 +336,25 @@ static void writeSnapshot(void) {
         @"audio_saved": @NO, @"audio_transmitted": @NO} mutableCopy];
 #if GLITCHIFY_RELAY
     snapshot[@"relay"] = GRStatus();
-    snapshot[@"audio_transmitted"] = @([snapshot[@"relay"][@"chunks"] unsignedIntValue] > 0);
+    snapshot[@"audio_transmitted"] = [snapshot[@"relay"][@"chunks"] unsignedIntValue] > 0 ? @YES : @NO;
 #endif
     NSURL *cache = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
     if (cache) [snapshot writeToURL:[cache URLByAppendingPathComponent:@"GlitchifyPhonePCMProbe.plist"] atomically:YES];
 }
 static void tick(void) {
-    if (++writeCount >= 180) atomic_store(&enabled, false);
+    ++writeCount;
+    if (!relayEnabled && writeCount >= 180) atomic_store(&enabled, false);
     writeSnapshot();
-    if (writeCount < 180) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ tick(); });
+    if (relayEnabled || writeCount < 180)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (relayEnabled ? 5 : 1) * NSEC_PER_SEC),
+                       dispatch_get_main_queue(), ^{ tick(); });
 }
 __attribute__((constructor)) static void loaded(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (![[[NSBundle mainBundle] objectForInfoDictionaryKey:@"GlitchifyPhonePCMProbe"] boolValue]) return;
         bool ready = install();
 #if GLITCHIFY_RELAY
-        if (ready) GRStartServer();
+        if (ready) relayEnabled = GRStartServer();
 #else
         (void)ready;
 #endif

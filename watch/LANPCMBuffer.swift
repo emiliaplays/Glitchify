@@ -1,7 +1,6 @@
 import Foundation
 
-/// Diagnostic wire format: one HTTP response containing 20 s of 24 kHz mono
-/// signed little-endian PCM16. It is consumed incrementally, not as a file.
+/// 24 kHz mono PCM16, either finite diagnostic or a paired live stream.
 final class LANPCMBuffer {
     static let byteLimit = 960_000
     static let capacity = 65_536
@@ -11,6 +10,10 @@ final class LANPCMBuffer {
     private var received = 0
     private var finished = false
     private var failure: String?
+    private let continuous: Bool
+    private var skipped = 0
+
+    init(continuous: Bool = false) { self.continuous = continuous }
 
     static func endpoint(_ input: String) -> URL? {
         let host = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,11 +34,26 @@ final class LANPCMBuffer {
     func append(_ data: Data) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard failure == nil, !finished else { return false }
-        guard data.count <= Self.capacity - bytes.count,
-              data.count <= Self.byteLimit - received else {
+        guard data.count <= Int.max - received,
+              continuous || (data.count <= Self.capacity - bytes.count && data.count <= Self.byteLimit - received) else {
             failure = "WLAN-Pufferlimit erreicht."
             bytes.removeAll(keepingCapacity: false)
             return false
+        }
+        if continuous, data.count > Self.capacity - bytes.count {
+            // Drop whole old samples only, retaining at most half a second after a stall.
+            // Avoid a second allocation proportional to an aggregated network callback.
+            let drop = (bytes.count + data.count - 24_000 + 1) & ~1
+            if drop >= bytes.count {
+                let offset = drop - bytes.count
+                bytes = Data(data.dropFirst(offset))
+            } else {
+                bytes.removeFirst(drop)
+                bytes.append(data)
+            }
+            skipped += drop
+            received += data.count
+            return true
         }
         bytes.append(data)
         received += data.count
@@ -45,8 +63,9 @@ final class LANPCMBuffer {
     func finish(error: String?) {
         lock.lock(); defer { lock.unlock() }
         finished = true
-        if let error { failure = error }
-        if failure == nil, received != Self.byteLimit { failure = "WLAN-Test unvollständig übertragen." }
+        if failure == nil, let error { failure = error }
+        if failure == nil, !continuous, received != Self.byteLimit { failure = "WLAN-Test unvollständig übertragen." }
+        if failure == nil, continuous, received % 2 != 0 { failure = "Unvollständiges Audiosample." }
         if failure != nil { bytes.removeAll(keepingCapacity: false) }
     }
 
@@ -59,8 +78,8 @@ final class LANPCMBuffer {
         return result
     }
 
-    func snapshot() -> (received: Int, queued: Int, finished: Bool, failure: String?) {
+    func snapshot() -> (received: Int, queued: Int, finished: Bool, failure: String?, skipped: Int) {
         lock.lock(); defer { lock.unlock() }
-        return (received, bytes.count, finished, failure)
+        return (received, bytes.count, finished, failure, skipped)
     }
 }
