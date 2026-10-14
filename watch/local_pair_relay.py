@@ -72,8 +72,9 @@ def pair(source, output, host=''):
             raise ValueError('Invalid or already paired source')
         info = plistlib.loads(old.read(PHONE + 'Info.plist'))
         wi = plistlib.loads(old.read(WATCH + 'Info.plist'))
-        if info.get('GlitchifyPhoneRelayRevision') != '1.1-phone-relay-probe.1' or wi.get('GlitchifyPrototypeRevision') != '1.1-phone-relay-probe.1':
-            raise ValueError('Expected the finite relay diagnostic')
+        revision = info.get('GlitchifyPhoneRelayRevision')
+        if revision not in {'1.1-phone-relay-probe.1', '1.1-phone-relay-probe.2'} or wi.get('GlitchifyPrototypeRevision') != revision:
+            raise ValueError('Expected matching supported phone and Watch relay revisions')
         info['NSLocalNetworkUsageDescription'] = 'Sendet auf deine Anfrage Musik an deine gekoppelte Watch im selben WLAN.'
         if host:
             wi['GlitchifyPhoneRelayHost'] = host
