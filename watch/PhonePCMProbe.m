@@ -3,7 +3,6 @@
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
@@ -11,6 +10,11 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "PhonePCMCore.h"
+
+// The iPhone SDK deliberately omits mach_vm.h. This is the same region-query
+// ABI used by the existing image-local compatibility bridge, not a memory write.
+extern kern_return_t mach_vm_region(vm_map_t, mach_vm_address_t *, mach_vm_size_t *,
+    vm_region_flavor_t, vm_region_info_t, mach_msg_type_number_t *, mach_port_t *);
 
 _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2, "Render counters must be lock free");
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "Render flags must be lock free");
