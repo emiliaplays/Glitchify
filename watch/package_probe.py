@@ -211,7 +211,7 @@ def package(base, app, output, *, omit_phone_extensions=False):
     checksum = digest(output)
     manifest = {
         'status': 'experimental-installation-and-speaker-probe',
-        'prototype': '1.1-speaker-probe.1',
+        'prototype': info.get('GlitchifyPrototypeRevision', 'unspecified'),
         'base_sha256': BASE_SHA256, 'sha256': checksum,
         'watch_bundle_id': info['CFBundleIdentifier'],
         'watch_architectures': architectures,

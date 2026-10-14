@@ -12,13 +12,21 @@
 
 The current `1.1-stream-route-probe.1` revision adds a separate **Audioausgabe testen** button. It schedules a finite ten-second quiet PCM signal through `AVAudioEngine` and `AVAudioPlayerNode`, using the normal playback/default audio policy. At most four quarter-second buffers are queued. It reports the actual output route and stops on cancellation, backgrounding, interruption, or a route change. The existing WatchKit file test remains available as a comparison.
 
-This new direct-output path is unconfirmed on hardware. It uses neither the microphone nor the network and does not relay Spotify yet. A completed callback is not proof that sound was audible through the built-in speaker.
+The tester confirmed audible output from this ten-second direct-output test on Series 5 / watchOS 10.6.2 on October 14. The exact displayed route is still pending. A completed callback alone is not proof that sound was audible.
+
+## Current WLAN receiver test
+
+Revision `1.1-lan-receiver-probe.1` adds **WLAN-Ton testen**. It receives one paced HTTP response incrementally with `URLSessionDataDelegate` and schedules PCM while the response is still arriving. It accepts only private IPv4 addresses, port 8765, the fixed test endpoint, the exact PCM header and a 960,000-byte response. Redirects are rejected. The receiver limits its own byte buffer to 64 KiB and its scheduled PCM to four 100 ms buffers. A thirty-second deadline, eight-second stall timeout, Stop, backgrounding and audio-route/interruption handling end playback and cancel the request. It does not download a file for later playback or loop clips.
+
+Run `python3 watch/lan_test_server.py --bind YOUR_PRIVATE_IPV4` on a computer reachable in the same WLAN. The server binds only that address, serves only synthetic audio, expires after five minutes, and changes no firewall settings. Enter its IPv4 address on the Watch and press **WLAN-Ton testen**. There are quiet changing tones and a silent interval every fifth second. Confirm both audible output and **Start während der Übertragung bestätigt**, then test Stop and leaving the app. A later test with iPhone Bluetooth disconnected is needed to distinguish a direct Watch Wi-Fi path from watchOS proxying through the paired phone.
+
+This stage still has **no iPhone audio capture, Spotify relay, authentication for personal music, or background playback**. The computer's finite, synthetic source tests the receiver before integrating the phone source. No local address or personal signing data is committed to this repository.
 
 ## Intended same-WLAN receiver
 
 The requested direction is now to leave Spotify and Eevee on the iPhone and send its rendered audio to the Watch over the same reachable WLAN. The iPhone would have to remain powered on and running playback; Bluetooth proximity would not be a transport requirement. This is distinct from independent Spotify playback with the phone off.
 
-The next gates are direct foreground speaker output on Series 5, a continuous HTTP audio response played before the response ends, then a bounded capture of the iPhone's rendered audio. Initial static inspection found Chroma's existing RemoteIO post-render observation as a capture candidate; usable PCM and an additive observer preserving phone playback/haptics are not yet verified. No microphone recording, cloud relay, or protection changes are part of this experiment. Phone background availability and Watch background speaker playback remain separate tests.
+The remaining gates are a continuous HTTP audio response played before the response ends, then a bounded capture of the iPhone's rendered audio. Initial static inspection found Chroma's existing RemoteIO post-render observation as a capture candidate; usable PCM and an additive observer preserving phone playback/haptics are not yet verified. No microphone recording, cloud relay, or protection changes are part of this experiment. Phone background availability and Watch background speaker playback remain separate tests.
 
 The source does not replace Spotify's existing iPhone WatchConnectivity delegate. The original iPhone application may still use its own WatchConnectivity implementation.
 
@@ -37,10 +45,10 @@ xcodebuild -project watch/GlitchifyWatch.xcodeproj -scheme GlitchifyWatch \
 python3 watch/package_probe.py --base /path/to/released/Glitchify.ipa \
   --watch-app watch/build/Build/Products/Release-watchos/GlitchifyWatch.app \
   --omit-phone-extensions \
-  --output watch/dist/Glitchify-1.1-stream-route-probe-unsigned.ipa
+  --output watch/dist/Glitchify-1.1-lan-receiver-probe-unsigned.ipa
 ```
 
-The `Watch audio route prototype (unsigned)` GitHub workflow performs these steps on a macOS runner. It produces short-lived Actions artifacts, not a public release. Version metadata `3.5.3` matches the existing iPhone container; `1.1-stream-route-probe.1` is the diagnostic revision, not a newer upstream Spotify version. The optional `--omit-phone-extensions` switch removes exactly the known five phone extensions for a two-App-ID diagnostic; without it, every original phone entry is preserved.
+The `Watch WLAN receiver prototype (unsigned)` GitHub workflow performs these steps on a macOS runner. It produces short-lived Actions artifacts, not a public release. Version metadata `3.5.3` matches the existing iPhone container; `1.1-stream-route-probe.1` is the diagnostic revision, not a newer upstream Spotify version. The optional `--omit-phone-extensions` switch removes exactly the known five phone extensions for a two-App-ID diagnostic; without it, every original phone entry is preserved.
 
 ## Installation gate
 

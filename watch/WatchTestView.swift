@@ -4,6 +4,9 @@ import SwiftUI
 struct WatchTestView: View {
     @StateObject private var audio = LocalAudioDiagnostic()
     @StateObject private var streamAudio = ForegroundAudioProbe()
+    @StateObject private var lanAudio = LANAudioProbe()
+    @AppStorage("GlitchifyLANTestHost") private var serverHost =
+        Bundle.main.object(forInfoDictionaryKey: "GlitchifyLANTestHost") as? String ?? ""
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -12,13 +15,39 @@ struct WatchTestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Glitchify")
                         .font(.title3.bold())
-                    Text("WLAN-Audio: Vorabtest")
+                    Text("WLAN-Audio: Empfangstest")
                         .font(.headline)
                         .foregroundStyle(.cyan)
                 }
 
-                Text("Prüft den Lautsprecher für fortlaufendes Audio. Noch keine Übertragung vom iPhone.")
+                Text("20 Sekunden Testaudio über WLAN. Spotify vom iPhone folgt im nächsten Schritt.")
                     .font(.footnote)
+
+                TextField("Testserver: IPv4-Adresse", text: $serverHost)
+                    .disabled(lanAudio.isRunning)
+                Button {
+                    lanAudio.start(host: serverHost)
+                } label: {
+                    Label("WLAN-Ton testen", systemImage: "wifi")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                .disabled(lanAudio.isRunning || streamAudio.isRunning || audio.isPresenting)
+                if lanAudio.isRunning {
+                    Button("WLAN-Test stoppen", role: .cancel, action: lanAudio.stop)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(lanAudio.status).foregroundStyle(lanAudio.failed ? Color.orange : Color.primary)
+                    Text(lanAudio.route)
+                    Text(lanAudio.detail).foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .accessibilityElement(children: .combine)
+                Text("Testserver und Watch müssen im selben WLAN sein. App offen lassen; der Test endet nach 20 Sekunden.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Divider()
+                Text("Lokaler Audiotest").font(.headline)
 
                 Button(action: streamAudio.start) {
                     Label("Audioausgabe testen", systemImage: "waveform")
@@ -26,7 +55,7 @@ struct WatchTestView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
-                .disabled(streamAudio.isRunning || audio.isPresenting)
+                .disabled(streamAudio.isRunning || audio.isPresenting || lanAudio.isRunning)
 
                 if streamAudio.isRunning {
                     Button("Test stoppen", role: .cancel, action: streamAudio.stop)
@@ -56,7 +85,7 @@ struct WatchTestView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
-                .disabled(audio.isPresenting || streamAudio.isRunning)
+                .disabled(audio.isPresenting || streamAudio.isRunning || lanAudio.isRunning)
 
                 Text("Für den Lautsprechertest Bluetooth-Kopfhörer trennen. watchOS wählt den Ausgang.")
                     .font(.caption2)
@@ -87,8 +116,11 @@ struct WatchTestView: View {
             .padding(.vertical, 8)
         }
         .onChange(of: scenePhase) { phase in
-            if phase == .background { streamAudio.stopForBackground() }
+            if phase == .background {
+                streamAudio.stopForBackground()
+                lanAudio.stop()
+            }
         }
-        .onDisappear { streamAudio.stopForBackground() }
+        .onDisappear { streamAudio.stopForBackground(); lanAudio.stop() }
     }
 }
