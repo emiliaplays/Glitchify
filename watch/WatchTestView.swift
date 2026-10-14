@@ -3,6 +3,8 @@ import SwiftUI
 @MainActor
 struct WatchTestView: View {
     @StateObject private var audio = LocalAudioDiagnostic()
+    @StateObject private var streamAudio = ForegroundAudioProbe()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ScrollView {
@@ -10,13 +12,43 @@ struct WatchTestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Glitchify")
                         .font(.title3.bold())
-                    Text("Watch-Test")
+                    Text("WLAN-Audio: Vorabtest")
                         .font(.headline)
                         .foregroundStyle(.cyan)
                 }
 
-                Text("Lokaler Audiotest. Spotify ist noch nicht angebunden.")
+                Text("Prüft den Lautsprecher für fortlaufendes Audio. Noch keine Übertragung vom iPhone.")
                     .font(.footnote)
+
+                Button(action: streamAudio.start) {
+                    Label("Audioausgabe testen", systemImage: "waveform")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                .disabled(streamAudio.isRunning || audio.isPresenting)
+
+                if streamAudio.isRunning {
+                    Button("Test stoppen", role: .cancel, action: streamAudio.stop)
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(streamAudio.status)
+                        .foregroundStyle(streamAudio.hasError ? Color.orange : Color.primary)
+                    Text(streamAudio.routeDescription)
+                    Text(streamAudio.detail)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .accessibilityElement(children: .combine)
+
+                Text("App offen lassen und Bluetooth-Kopfhörer trennen. Der Test endet automatisch nach 10 Sekunden.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+                Text("Bisheriger Dateitest")
+                    .font(.headline)
 
                 Button(action: audio.playTestTone) {
                     Label("Testton abspielen", systemImage: "play.fill")
@@ -24,7 +56,7 @@ struct WatchTestView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.cyan)
-                .disabled(audio.isPresenting)
+                .disabled(audio.isPresenting || streamAudio.isRunning)
 
                 Text("Für den Lautsprechertest Bluetooth-Kopfhörer trennen. watchOS wählt den Ausgang.")
                     .font(.caption2)
@@ -54,5 +86,9 @@ struct WatchTestView: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 8)
         }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background { streamAudio.stopForBackground() }
+        }
+        .onDisappear { streamAudio.stopForBackground() }
     }
 }

@@ -159,10 +159,22 @@ class FixtureTests(unittest.TestCase):
                 item.comment = b'preserve this entry'
                 archive.writestr(item, data)
 
-    def package_fixture(self):
+    def package_fixture(self, **options):
         # The production hash remains pinned. Only this synthetic fixture is trusted here.
         with mock.patch.object(probe, 'BASE_SHA256', probe.digest(self.base)), redirect_stdout(io.StringIO()):
-            probe.package(self.base, self.app, self.output)
+            probe.package(self.base, self.app, self.output, **options)
+
+    def extension_entries(self):
+        entries = {probe.PLUGINS_PREFIX: b''}
+        for index, root in enumerate(probe.PHONE_EXTENSION_ROOTS):
+            entries[root] = b''
+            entries[root + 'Info.plist'] = plistlib.dumps({
+                'CFBundleIdentifier': probe.PHONE_BUNDLE_ID + f'.fixture{index}',
+                'CFBundleExecutable': 'Extension',
+            })
+            entries[root + 'Extension'] = b'original extension executable' + bytes([index])
+            entries[root + 'Resources/fixture.dat'] = b'extension resource'
+        return entries
 
     def test_valid_companion_metadata(self):
         info, architectures = probe.validate_app(self.app)
@@ -237,6 +249,11 @@ class FixtureTests(unittest.TestCase):
         manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
         self.assertEqual(manifest['sha256'], hashlib.sha256(self.output.read_bytes()).hexdigest())
         self.assertTrue(manifest['original_entries_unchanged'])
+        self.assertTrue(manifest['retained_original_entries_unchanged'])
+        self.assertFalse(manifest['omit_phone_extensions'])
+        self.assertEqual(manifest['removed_phone_extensions'], [])
+        self.assertEqual(manifest['removed_entry_count'], 0)
+        self.assertEqual(manifest['app_id_target_count'], 2)
         for flag in ('spotify_playback', 'device_installation_verified', 'speaker_verified', 'background_playback_verified'):
             self.assertIs(manifest[flag], False)
         self.assertEqual(manifest['watch_architectures'], ['arm64', 'arm64_32'])
@@ -281,6 +298,131 @@ class FixtureTests(unittest.TestCase):
                 self.make_base({key: '99.0'})
                 with self.assertRaises(ValueError): self.package_fixture()
                 self.assertFalse(self.output.exists())
+
+    def test_default_call_preserves_all_five_extensions(self):
+        self.make_base(extra=self.extension_entries())
+        self.package_fixture()  # Existing three-positional-argument API.
+        with zipfile.ZipFile(self.base) as original, zipfile.ZipFile(self.output) as output:
+            for name in original.namelist():
+                self.assertEqual(output.read(name), original.read(name), name)
+        manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertEqual(manifest['app_id_target_count'], 7)
+        self.assertEqual(manifest['removed_phone_extensions'], [])
+        self.assertTrue(manifest['original_entries_unchanged'])
+
+    def test_omit_extensions_removes_exact_known_scope_and_retains_every_other_byte(self):
+        extensions = self.extension_entries()
+        sentinels = {
+            'Payload/Spotify.app/Resources/PlugIns-not-a-directory.txt': b'keep me',
+            'Payload/Spotify.app/Resources/IntentsExtension.appex-not-a-bundle': b'keep me too',
+            'Payload/Spotify.app/Frameworks/ExtensionSupport.framework/fixture': b'framework retained',
+        }
+        self.make_base(extra=extensions | sentinels)
+        before = self.base.read_bytes()
+        self.package_fixture(omit_phone_extensions=True)
+        self.assertEqual(self.base.read_bytes(), before)
+        with zipfile.ZipFile(self.base) as original, zipfile.ZipFile(self.output) as output:
+            self.assertFalse(any('PlugIns' in name.split('/') for name in output.namelist()))
+            self.assertEqual(set(original.namelist()) - set(output.namelist()), set(extensions))
+            for old in original.infolist():
+                if old.filename in extensions:
+                    continue
+                new = output.getinfo(old.filename)
+                self.assertEqual(original.read(old), output.read(new), old.filename)
+                for field in ('date_time', 'external_attr', 'create_system', 'comment', 'compress_type'):
+                    self.assertEqual(getattr(old, field), getattr(new, field), old.filename)
+            self.assertEqual(probe.bundle_roots(output.namelist()), {probe.PHONE_ROOT, probe.PREFIX})
+            watch = plistlib.loads(output.read(probe.PREFIX + 'Info.plist'))
+            self.assertEqual(watch['CFBundleIdentifier'], probe.PHONE_BUNDLE_ID + '.watchkitapp')
+            self.assertEqual(watch['WKCompanionAppBundleIdentifier'], probe.PHONE_BUNDLE_ID)
+        manifest = json.loads(self.output.with_suffix('.manifest.json').read_text())
+        self.assertFalse(manifest['original_entries_unchanged'])
+        self.assertTrue(manifest['retained_original_entries_unchanged'])
+        self.assertEqual(manifest['removed_phone_extensions'], list(probe.PHONE_EXTENSION_ROOTS))
+        self.assertEqual(manifest['removed_entry_count'], len(extensions))
+        self.assertEqual(manifest['retained_original_entry_count'], 4 + len(sentinels))
+        self.assertEqual(manifest['app_id_target_count'], 2)
+        self.assertEqual({target['bundle_id'] for target in manifest['app_id_targets']},
+                         {probe.PHONE_BUNDLE_ID, probe.WATCH_BUNDLE_ID})
+
+    def test_omit_extensions_rejects_unknown_roots_and_orphan_files_before_output(self):
+        for name in ('Unknown.appex/Info.plist', 'IntentsExtension.appex-backup/Info.plist',
+                     'unrelated.txt'):
+            with self.subTest(name=name):
+                self.make_base(extra=self.extension_entries() | {probe.PLUGINS_PREFIX + name: b'keep'})
+                with self.assertRaisesRegex(ValueError, 'Unknown phone PlugIns'):
+                    self.package_fixture(omit_phone_extensions=True)
+                self.assertFalse(self.output.exists())
+
+    def test_omit_extensions_rejects_missing_known_root_or_metadata(self):
+        cases = ({}, {name: data for name, data in self.extension_entries().items()
+                      if not name.startswith(probe.PHONE_EXTENSION_ROOTS[-1])},
+                 {name: data for name, data in self.extension_entries().items()
+                  if name != probe.PHONE_EXTENSION_ROOTS[0] + 'Info.plist'})
+        for index, entries in enumerate(cases):
+            with self.subTest(index=index):
+                self.make_base(extra=entries)
+                with self.assertRaises(ValueError):
+                    self.package_fixture(omit_phone_extensions=True)
+                self.assertFalse(self.output.exists())
+
+    def test_omit_extensions_rejects_unknown_target_nested_inside_known_root(self):
+        self.make_base(extra=self.extension_entries() | {
+            probe.PHONE_EXTENSION_ROOTS[0] + 'Resources/Unexpected.appex/Info.plist': b'unknown'})
+        with self.assertRaisesRegex(ValueError, 'Unknown nested app or extension'):
+            self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.exists())
+
+    def test_omit_extensions_rejects_plugins_elsewhere_in_base_or_watch(self):
+        self.make_base(extra=self.extension_entries() | {
+            'Payload/Spotify.app/Resources/PlugIns/Unknown.appex/Info.plist': b'unknown'})
+        with self.assertRaisesRegex(ValueError, 'Unexpected PlugIns'):
+            self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.exists())
+        self.make_base(extra=self.extension_entries())
+        nested = self.app / 'PlugIns' / 'Unexpected.appex'
+        nested.mkdir(parents=True)
+        (nested / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'unexpected'}))
+        with self.assertRaisesRegex(ValueError, 'must not contain any PlugIns'):
+            self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.exists())
+
+    def test_omit_extensions_rejects_unexpected_app_target_outside_plugins(self):
+        self.make_base(extra=self.extension_entries() | {
+            'Payload/Other.app/Executable': b'unknown target without plist'})
+        with self.assertRaisesRegex(ValueError, 'exactly the phone and Watch'):
+            self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.exists())
+
+    def test_post_write_verification_rejects_silent_retained_content_change(self):
+        self.make_base(extra=self.extension_entries())
+        real_write = zipfile.ZipFile.writestr
+
+        def corrupt_output(archive, name, data, *args, **kwargs):
+            filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
+            if Path(archive.filename) == self.output and filename == probe.PHONE_ROOT + 'Spotify':
+                data += b'unintended modification'
+            return real_write(archive, name, data, *args, **kwargs)
+
+        with mock.patch.object(zipfile.ZipFile, 'writestr', corrupt_output):
+            with self.assertRaisesRegex(ValueError, 'Retained original entry changed'):
+                self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.with_suffix('.manifest.json').exists())
+
+    def test_post_write_verification_rejects_silent_retained_entry_deletion(self):
+        self.make_base(extra=self.extension_entries())
+        real_write = zipfile.ZipFile.writestr
+
+        def lose_output_entry(archive, name, data, *args, **kwargs):
+            filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
+            if Path(archive.filename) == self.output and filename == probe.PHONE_ROOT + 'Spotify':
+                return
+            return real_write(archive, name, data, *args, **kwargs)
+
+        with mock.patch.object(zipfile.ZipFile, 'writestr', lose_output_entry):
+            with self.assertRaisesRegex(ValueError, 'Output entry set differs'):
+                self.package_fixture(omit_phone_extensions=True)
+        self.assertFalse(self.output.with_suffix('.manifest.json').exists())
 
 
 class AudioFixtureTests(unittest.TestCase):

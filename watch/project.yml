@@ -16,10 +16,11 @@ targets:
       - path: GlitchifyWatchApp.swift
       - path: WatchTestView.swift
       - path: LocalAudioDiagnostic.swift
+      - path: ForegroundAudioProbe.swift
       - path: Generated/Resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.spotify.client.glitchifywatch
+        PRODUCT_BUNDLE_IDENTIFIER: com.spotify.client.watchkitapp
         PRODUCT_NAME: GlitchifyWatch
         CURRENT_PROJECT_VERSION: '3.5.3'
         MARKETING_VERSION: '3.5.3'
@@ -40,6 +41,6 @@ targets:
         WKCompanionAppBundleIdentifier: com.spotify.client
         WKRunsIndependentlyOfCompanionApp: true
         WKWatchOnly: false
-        GlitchifyPrototypeRevision: 1.1-speaker-probe.1
+        GlitchifyPrototypeRevision: 1.1-stream-route-probe.1
     scheme:
       gatherCoverageData: false

@@ -1,7 +1,8 @@
 """Add a verified, unsigned watchOS probe to a COPY of the released iPhone IPA.
 
 This is an installation/audio diagnostic, not the Glitchify 1.1 release.
-It never rewrites the original IPA or the existing iPhone program files.
+It never rewrites the original IPA or retained iPhone program files. The optional
+two-target diagnostic mode omits only the five audited iPhone extensions.
 """
 from pathlib import Path
 import argparse
@@ -13,9 +14,19 @@ import struct
 import zipfile
 
 BASE_SHA256 = '48f708090a7ab31945d8733bc97e2e2fd2a19c07bdc1cfc1e9d3818489e3e572'
-WATCH_BUNDLE_ID = 'com.spotify.client.glitchifywatch'
+WATCH_BUNDLE_ID = 'com.spotify.client.watchkitapp'
 PHONE_BUNDLE_ID = 'com.spotify.client'
 PREFIX = 'Payload/Spotify.app/Watch/GlitchifyWatch.app/'
+PHONE_ROOT = 'Payload/Spotify.app/'
+PLUGINS_PREFIX = PHONE_ROOT + 'PlugIns/'
+PHONE_EXTENSION_NAMES = (
+    'IntentsExtension.appex',
+    'NotificationContentExtension.appex',
+    'NotificationServiceExtension.appex',
+    'SpotifyGlassLiveActivity.appex',
+    'WidgetExtension.appex',
+)
+PHONE_EXTENSION_ROOTS = tuple(PLUGINS_PREFIX + name + '/' for name in PHONE_EXTENSION_NAMES)
 
 
 def digest(path):
@@ -101,7 +112,43 @@ def validate_app(app):
     return info, architectures
 
 
-def package(base, app, output):
+def bundle_roots(names):
+    """Count app/extension targets, including malformed targets without an Info.plist."""
+    roots = set()
+    for name in names:
+        parts = name.rstrip('/').split('/')
+        for index, part in enumerate(parts):
+            if part.endswith(('.app', '.appex')):
+                roots.add('/'.join(parts[:index + 1]) + '/')
+    return roots
+
+
+def omitted_phone_entries(names):
+    """Fail closed unless PlugIns contains exactly the audited five extensions."""
+    removed = set()
+    found = set()
+    for name in names:
+        if name == PLUGINS_PREFIX:
+            removed.add(name)
+        elif name.startswith(PLUGINS_PREFIX):
+            root = next((root for root in PHONE_EXTENSION_ROOTS if name.startswith(root)), None)
+            if root is None:
+                raise ValueError(f'Unknown phone PlugIns entry: {name}')
+            found.add(root)
+            removed.add(name)
+        elif 'PlugIns' in name.rstrip('/').split('/'):
+            raise ValueError(f'Unexpected PlugIns location: {name}')
+    if found != set(PHONE_EXTENSION_ROOTS):
+        raise ValueError('Expected all five audited phone extension roots')
+    nested_targets = {root for root in bundle_roots(removed) if root.startswith(PLUGINS_PREFIX)}
+    if nested_targets != set(PHONE_EXTENSION_ROOTS):
+        raise ValueError('Unknown nested app or extension inside phone PlugIns')
+    if any(root + 'Info.plist' not in names for root in PHONE_EXTENSION_ROOTS):
+        raise ValueError('Audited phone extension is missing its Info.plist')
+    return removed
+
+
+def package(base, app, output, *, omit_phone_extensions=False):
     base, app, output = Path(base), Path(app), Path(output)
     if base.resolve() == output.resolve() or output.exists():
         raise ValueError('Refusing to overwrite input or existing output')
@@ -109,6 +156,7 @@ def package(base, app, output):
         raise ValueError('Base IPA differs from the audited v1.0.0 release')
     info, architectures = validate_app(app)
     files = sorted(p for p in app.rglob('*') if p.is_file())
+    watch_names = {PREFIX + path.relative_to(app).as_posix() for path in files}
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(base) as source:
         names = source.namelist()
@@ -120,21 +168,46 @@ def package(base, app, output):
         for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
             if phone.get(key) != info[key]:
                 raise ValueError(f'Phone/Watch {key} mismatch')
+        removed = omitted_phone_entries(names) if omit_phone_extensions else set()
+        retained = set(names) - removed
+        expected_names = retained | watch_names
+        target_roots = bundle_roots(expected_names)
+        if omit_phone_extensions:
+            if any('PlugIns' in name.rstrip('/').split('/') for name in expected_names):
+                raise ValueError('Two-target diagnostic must not contain any PlugIns paths')
+            if target_roots != {PHONE_ROOT, PREFIX}:
+                raise ValueError('Two-target diagnostic requires exactly the phone and Watch apps')
+        targets = []
+        for root in sorted(target_roots):
+            if root + 'Info.plist' not in expected_names:
+                raise ValueError(f'App target missing Info.plist: {root}')
+            target_info = (plistlib.loads((app / 'Info.plist').read_bytes()) if root == PREFIX
+                           else plistlib.loads(source.read(root + 'Info.plist')))
+            identifier = target_info.get('CFBundleIdentifier')
+            if not isinstance(identifier, str) or not identifier:
+                raise ValueError(f'App target missing bundle identifier: {root}')
+            targets.append({'path': root, 'bundle_id': identifier})
         with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as dest:
             for item in source.infolist():
-                dest.writestr(item, source.read(item))
+                if item.filename in retained:
+                    dest.writestr(item, source.read(item))
             for path in files:
                 dest.write(path, PREFIX + path.relative_to(app).as_posix())
-    # Check every original uncompressed entry; signatures are refreshed by the installer.
+    # Check every retained original entry; signatures are refreshed by the installer.
     with zipfile.ZipFile(base) as source, zipfile.ZipFile(output) as dest:
         if dest.testzip() is not None:
             raise ValueError('Output ZIP CRC check failed')
-        for name in source.namelist():
+        if len(dest.namelist()) != len(expected_names) or set(dest.namelist()) != expected_names:
+            raise ValueError('Output entry set differs from the exact retained and Watch entries')
+        for name in retained:
             if source.read(name) != dest.read(name):
-                raise ValueError(f'Original entry changed: {name}')
+                raise ValueError(f'Retained original entry changed: {name}')
         added = set(dest.namelist()) - set(source.namelist())
-        if not added or not all(name.startswith(PREFIX) for name in added):
+        if not added or added != watch_names:
             raise ValueError('Unexpected modifications outside the new Watch bundle')
+        for path in files:
+            if dest.read(PREFIX + path.relative_to(app).as_posix()) != path.read_bytes():
+                raise ValueError('Added Watch resource changed during packaging')
     checksum = digest(output)
     manifest = {
         'status': 'experimental-installation-and-speaker-probe',
@@ -143,7 +216,14 @@ def package(base, app, output):
         'watch_bundle_id': info['CFBundleIdentifier'],
         'watch_architectures': architectures,
         'minimum_watchos': info.get('MinimumOSVersion'),
-        'original_entries_unchanged': True,
+        'original_entries_unchanged': not removed,
+        'retained_original_entries_unchanged': True,
+        'retained_original_entry_count': len(retained),
+        'omit_phone_extensions': omit_phone_extensions,
+        'removed_phone_extensions': list(PHONE_EXTENSION_ROOTS) if removed else [],
+        'removed_entry_count': len(removed),
+        'app_id_target_count': len(targets),
+        'app_id_targets': targets,
         'signing': 'Watch bundle unsigned; installation requires matching phone/watch provisioning',
         'spotify_playback': False, 'device_installation_verified': False,
         'speaker_verified': False, 'background_playback_verified': False,
@@ -159,5 +239,8 @@ if __name__ == '__main__':
     parser.add_argument('--base', type=Path, required=True)
     parser.add_argument('--watch-app', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--omit-phone-extensions', action='store_true',
+                        help='Omit exactly the five audited phone extensions for a two-App-ID diagnostic')
     args = parser.parse_args()
-    package(args.base, args.watch_app, args.output)
+    package(args.base, args.watch_app, args.output,
+            omit_phone_extensions=args.omit_phone_extensions)
