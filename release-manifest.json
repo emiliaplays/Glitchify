@@ -1,0 +1,27 @@
+{
+  "release": "v1.0.0",
+  "date": "2026-10-14",
+  "ipa": "Glitchify.ipa",
+  "sha256": "48f708090a7ab31945d8733bc97e2e2fd2a19c07bdc1cfc1e9d3818489e3e572",
+  "bytes": 89852549,
+  "functional_revision": "reverse-v9-haptics-pause",
+  "branding_revision": "glitchify-spotify-pastel-glitch-v1",
+  "device_test": {
+    "user_confirmed_final_build": true,
+    "ios_user_reported": "27.2",
+    "installer": "Sideloadly"
+  },
+  "helpers": {
+    "SpotifyReverseCompatibilityBridge.dylib": "d20189486b3927849f67950df3396f3a8b3a542cbf4c993274a413aba4181edb",
+    "SpotifyHUDSuppression.dylib": "1bcfb08a835e0ecc5679e5da08b43fa3f8e62351ff07a237a4c2ba136b22d873",
+    "SpotifyStockUI.dylib": "fbda2ad924e5975ad03675a33dd4548f93dfd78a3965c4fac3c9b98eb7ce9d47",
+    "SpotifySettingsFilter.dylib": "3208690b3673706a400b1aedcabe7da3dddbee149062587a47463b75653267a7",
+    "SpotifyHapticsPauseGuard.dylib": "cd9d891c530d79fd8c6cd3ee1b1aebf74ee881f7c02b79a7372d55e6bc438a56"
+  },
+  "package_checks": {
+    "zip_crc": "passed",
+    "unchanged_macho_files_compared_with_functional_v9": 20,
+    "added_rgb_app_icons": 17,
+    "preserved_main_bundle_localizations": 75
+  }
+}
