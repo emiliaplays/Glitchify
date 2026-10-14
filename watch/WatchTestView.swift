@@ -7,6 +7,8 @@ struct WatchTestView: View {
     @StateObject private var lanAudio = LANAudioProbe()
     @AppStorage("GlitchifyLANTestHost") private var serverHost =
         Bundle.main.object(forInfoDictionaryKey: "GlitchifyLANTestHost") as? String ?? ""
+    @AppStorage("GlitchifyPhoneRelayHost") private var phoneHost =
+        Bundle.main.object(forInfoDictionaryKey: "GlitchifyPhoneRelayHost") as? String ?? ""
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -15,13 +17,26 @@ struct WatchTestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Glitchify")
                         .font(.title3.bold())
-                    Text("WLAN-Audio: Empfangstest")
+                    Text("WLAN-Audio: Musiktest")
                         .font(.headline)
                         .foregroundStyle(.cyan)
                 }
 
-                Text("20 Sekunden Testaudio über WLAN. Spotify vom iPhone folgt im nächsten Schritt.")
+                Text("Glitchify auf dem iPhone neu öffnen und Musik starten. Beide Apps für diesen 20-Sekunden-Test offen lassen.")
                     .font(.footnote)
+
+                TextField("iPhone: IPv4-Adresse", text: $phoneHost).disabled(lanAudio.isRunning)
+                Button {
+                    lanAudio.start(host: phoneHost, phone: true)
+                } label: {
+                    Label("iPhone-Musik testen", systemImage: "music.note")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(lanAudio.isRunning || streamAudio.isRunning || audio.isPresenting)
+                Text("Lokale Testkopplung nötig. Das iPhone bleibt die Musikquelle; Hintergrundbetrieb ist noch nicht bestätigt.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Divider()
+                Text("Synthetischer WLAN-Test").font(.headline)
 
                 TextField("Testserver: IPv4-Adresse", text: $serverHost)
                     .disabled(lanAudio.isRunning)

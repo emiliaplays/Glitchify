@@ -10,6 +10,9 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include "PhonePCMCore.h"
+#if GLITCHIFY_RELAY
+#import "PhoneRelayServer.h"
+#endif
 
 // The iPhone SDK deliberately omits mach_vm.h. This is the same region-query
 // ABI used by the existing image-local compatibility bridge, not a memory write.
@@ -67,6 +70,9 @@ static OSStatus observe(void *refcon, AudioUnitRenderActionFlags *flags,
         atomic_fetch_add_explicit(&ctx->frames, frames, memory_order_relaxed);
         if (peak) atomic_fetch_add_explicit(&ctx->nonzero, 1, memory_order_relaxed);
         atomic_store_explicit(&ctx->latestPeak, peak, memory_order_relaxed);
+#if GLITCHIFY_RELAY
+        GRObserve(ctx->format, buffers, frames);
+#endif
     } else atomic_fetch_add_explicit(&ctx->rejected, 1, memory_order_relaxed);
     atomic_store_explicit(&ctx->processing, false, memory_order_release);
     return noErr; // Existing renderer and other listeners keep their result/buffers.
@@ -75,8 +81,12 @@ static OSStatus observe(void *refcon, AudioUnitRenderActionFlags *flags,
 static void formatChanged(void *refcon, AudioUnit unit, AudioUnitPropertyID property,
                           AudioUnitScope scope, AudioUnitElement element) {
     (void)unit; (void)scope; (void)element;
-    if (property == kAudioUnitProperty_StreamFormat)
+    if (property == kAudioUnitProperty_StreamFormat) {
         atomic_store_explicit(&((Context *)refcon)->invalid, true, memory_order_release);
+#if GLITCHIFY_RELAY
+        GRPause();
+#endif
+    }
 }
 
 static bool readFormat(AudioUnit unit, GPFormat *out) {
@@ -151,6 +161,9 @@ static OSStatus startUnit(AudioUnit unit) {
     return result;
 }
 static OSStatus stopUnit(AudioUnit unit) {
+#if GLITCHIFY_RELAY
+    GRPause();
+#endif
     atomic_fetch_add(&stopCalls, 1);
     pthread_mutex_lock(&control);
     for (unsigned i = 0; i < used; ++i) if (contexts[i].unit == unit)
@@ -159,6 +172,9 @@ static OSStatus stopUnit(AudioUnit unit) {
     return previousStop(unit);
 }
 static OSStatus disposeUnit(AudioUnit unit) {
+#if GLITCHIFY_RELAY
+    GRPause();
+#endif
     atomic_fetch_add(&disposeCalls, 1);
     pthread_mutex_lock(&control);
     for (unsigned i = 0; i < used; ++i) if (contexts[i].unit == unit && !atomic_load(&contexts[i].disposed)) {
@@ -311,12 +327,16 @@ static void writeSnapshot(void) {
             @"silent_buffers": @(atomic_load(&ctx->silent)), @"latest_peak_millionths": @(atomic_load(&ctx->latestPeak))}];
     }
     pthread_mutex_unlock(&control);
-    NSDictionary *snapshot = @{@"revision": @"1.1-phone-pcm-probe.1", @"status": installStatus,
+    NSMutableDictionary *snapshot = [@{@"revision": @"1.1-phone-pcm-probe.1", @"status": installStatus,
         @"enabled": @(atomic_load(&enabled)), @"sample": @(writeCount),
         @"start_calls": @(atomic_load(&startCalls)), @"stop_calls": @(atomic_load(&stopCalls)),
         @"dispose_calls": @(atomic_load(&disposeCalls)), @"rejected_units": @(atomic_load(&rejectedUnits)),
         @"listener_errors": @(atomic_load(&listenerErrors)), @"units": units,
-        @"audio_saved": @NO, @"audio_transmitted": @NO};
+        @"audio_saved": @NO, @"audio_transmitted": @NO} mutableCopy];
+#if GLITCHIFY_RELAY
+    snapshot[@"relay"] = GRStatus();
+    snapshot[@"audio_transmitted"] = @([snapshot[@"relay"][@"chunks"] unsignedIntValue] > 0);
+#endif
     NSURL *cache = [[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] firstObject];
     if (cache) [snapshot writeToURL:[cache URLByAppendingPathComponent:@"GlitchifyPhonePCMProbe.plist"] atomically:YES];
 }
@@ -328,6 +348,12 @@ static void tick(void) {
 __attribute__((constructor)) static void loaded(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (![[[NSBundle mainBundle] objectForInfoDictionaryKey:@"GlitchifyPhonePCMProbe"] boolValue]) return;
-        install(); tick();
+        bool ready = install();
+#if GLITCHIFY_RELAY
+        if (ready) GRStartServer();
+#else
+        (void)ready;
+#endif
+        tick();
     });
 }

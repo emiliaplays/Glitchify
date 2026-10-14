@@ -5,6 +5,19 @@ import Foundation
 private final class LANTransfer: NSObject, URLSessionDataDelegate {
     let buffer = LANPCMBuffer()
     private var accepted = false // serial URLSession delegate queue only
+    let pairing: PhoneRelayPairing?
+    init(pairing: PhoneRelayPairing? = nil) { self.pairing = pairing; super.init() }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let pairing else { completionHandler(.performDefaultHandling, nil); return }
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust, pairing.verify(trust) else {
+            buffer.finish(error: "Die iPhone-Kopplung konnte nicht verifiziert werden.")
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
@@ -72,6 +85,7 @@ final class LANAudioProbe: ObservableObject {
     private var deadline = Date()
     private var started = false
     private var playedSamples = 0
+    private var phonePairing: PhoneRelayPairing?
 
     deinit {
         poll?.cancel()
@@ -87,12 +101,20 @@ final class LANAudioProbe: ObservableObject {
         }
     }
 
-    func start(host: String) {
+    func start(host: String, phone: Bool = false) {
         guard runID == nil, Self.sessionOwner == nil else { return }
-        guard let endpoint = LANPCMBuffer.endpoint(host) else {
+        guard var endpoint = LANPCMBuffer.endpoint(host) else {
             failed = true
             status = "Bitte die lokale IPv4-Adresse des Testservers eintragen."
             return
+        }
+        phonePairing = nil
+        if phone {
+            guard let pairing = PhoneRelayPairing.load(), let address = endpoint.host,
+                  let secure = URL(string: "https://\(address):8766/glitchify-phone") else {
+                failed = true; status = "Diese Testkopie hat noch keine lokale iPhone-Kopplung."; return
+            }
+            phonePairing = pairing; endpoint = secure
         }
         let id = UUID()
         runID = id
@@ -156,7 +178,7 @@ final class LANAudioProbe: ObservableObject {
                 Task { @MainActor [weak self] in self?.finish(id, "WLAN-Test durch Audio-Wechsel unterbrochen.", failed: true) }
             })
         }
-        let delegate = LANTransfer()
+        let delegate = LANTransfer(pairing: phonePairing)
         transfer = delegate
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
@@ -173,6 +195,7 @@ final class LANAudioProbe: ObservableObject {
         connection = session
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if let phonePairing { urlRequest.setValue("Bearer " + phonePairing.token, forHTTPHeaderField: "Authorization") }
         let task = session.dataTask(with: urlRequest)
         request = task
         lastArrival = Date()
@@ -211,7 +234,8 @@ final class LANAudioProbe: ObservableObject {
             data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 for index in 0..<count {
                     let word = UInt16(raw[index * 2]) | UInt16(raw[index * 2 + 1]) << 8
-                    samples[index] = max(-0.2, min(0.2, Float(Int16(bitPattern: word)) / 32768))
+                    let sample = Float(Int16(bitPattern: word)) / 32768
+                    samples[index] = phonePairing == nil ? max(-0.2, min(0.2, sample)) : sample * 0.35
                 }
             }
             queued += 1

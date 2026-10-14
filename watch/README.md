@@ -1,6 +1,14 @@
 # Glitchify 1.1 development: Watch audio receiver experiments
 
-**Experimental source and unsigned diagnostic only. This is not a working Spotify Watch player or a 1.1 release.** Installation and audible local speaker output were confirmed on Apple Watch Series 5 / watchOS 10.6.2 on October 14, 2026. The tester also confirmed that the bundled tone plays with the iPhone completely switched off.
+**Experimental source and unsigned diagnostic only; not a 1.1 release.** The phone PCM observer and synthetic WLAN receiver have been tested separately on hardware. The newly added paired music relay still requires its end-to-end hardware test. The local speaker test works on Series 5 / watchOS 10.6.2, including with the iPhone switched off; the relay requires the phone to remain on.
+
+## Paired 20-second music relay test
+
+`1.1-phone-relay-probe.1` connects the observed phone audio output to the Watch receiver. The phone serves one finite 20-second, 24 kHz mono PCM response over TLS on Wi-Fi port 8766. The render callback only downmixes/downsamples into a bounded single-producer ring; network work runs separately. Pause emits silence, excess backlog ends the test, and the server window expires after 170 seconds from phone app launch. This is a foreground experiment with reduced volume and preview-quality downsampling, not a continuous or background player.
+
+The public artifact contains no pairing credentials and does not start a server. Run `local_pair_relay.py` locally with `--source` and `--output` to create a **private test copy**, optionally using `--phone-host` for the iPhone's private IPv4 address. The script requires Python `cryptography`, creates a fresh access key and a one-day TLS identity, and gives the Watch only the private CA's public certificate and the access key. The Watch validates the TLS chain, validity and fixed server identity against that app-local anchor; no device trust-store changes are needed. **Never publish the paired IPA, its identity or its keys.** Both targets then require local re-signing.
+
+Open Glitchify on the iPhone, allow its requested local-network access, and start a song. On the Watch enter the iPhone address and press **iPhone-Musik testen** within the three-minute window. Keep both apps open for this first test. Watch Stop, leaving the Watch app, timeout and audio interruption cancel the request. The earlier synthetic WLAN and local-file tests remain available. A successful build does not establish audible relay playback; that remains the next hardware gate.
 
 ## What this prototype does
 
@@ -30,13 +38,13 @@ The receiver still has **no Spotify relay, authentication for personal music, or
 
 The helper validates the pinned phone/Chroma image identities, import symbols and existing Chroma audio-hook pointers before changing three main-image import pointers. It forwards each existing start/stop/dispose implementation once and adds only its own post-render listener. Unsupported formats, format changes and concurrent callbacks are rejected. Static callback contexts are never freed or reused during the process, and the render callback uses no allocations, locks, Objective-C calls or I/O. These are implementation safeguards; preserving phone playback and haptics still requires a device test.
 
-The packaging step adds one helper, an explicit Info.plist opt-in, and one dependency in Chroma's unused load-command padding. It verifies all other archive entries and executable sections are unchanged. Recursive signing is required. The stable release remains unchanged. Actual usable phone PCM and the complete music relay are not yet verified.
+The packaging step adds one helper, an explicit Info.plist opt-in, and one dependency in Chroma's unused load-command padding. It verifies all other archive entries and executable sections are unchanged. Recursive signing is required. The stable release remains unchanged. On October 14 the observer reported valid 44.1 kHz stereo planar float PCM, two starts and one stop, with no rejected buffers or listener errors. The tester confirmed normal play/pause/resume. No audio was saved or transmitted during that observer test. The complete music relay remains unverified.
 
 ## Intended same-WLAN receiver
 
 The requested direction is now to leave Spotify and Eevee on the iPhone and send its rendered audio to the Watch over the same reachable WLAN. The iPhone would have to remain powered on and running playback; Bluetooth proximity would not be a transport requirement. This is distinct from independent Spotify playback with the phone off.
 
-The continuous synthetic HTTP response has been heard before completion on the tester's Watch. The next gate is bounded observation of the iPhone's rendered audio. Static inspection found Chroma's existing RemoteIO post-render observation as a candidate; usable PCM and an additive observer preserving phone playback/haptics are not yet verified. No microphone recording, cloud relay, or protection changes are part of this experiment. Phone background availability and Watch background speaker playback remain separate tests.
+The continuous synthetic HTTP response has been heard before completion on the tester's Watch, and the additive phone observer subsequently reported valid PCM while preserving tested play/pause/resume. The next gate is audible end-to-end playback through the paired TLS relay. No microphone recording or cloud relay is part of this experiment. Phone background availability and Watch background speaker playback remain separate tests.
 
 The source does not replace Spotify's existing iPhone WatchConnectivity delegate. The original iPhone application may still use its own WatchConnectivity implementation.
 
@@ -58,7 +66,7 @@ python3 watch/package_probe.py --base /path/to/released/Glitchify.ipa \
   --output watch/dist/Glitchify-1.1-lan-receiver-probe-unsigned.ipa
 ```
 
-The `Watch relay phone PCM diagnostic (unsigned)` GitHub workflow performs these Watch steps and additionally compiles, ad-hoc signs and embeds the opt-in phone observer on a macOS runner. It produces short-lived Actions artifacts, not a public release. Version metadata `3.5.3` matches the existing iPhone container; `1.1-lan-receiver-probe.1` is the Watch diagnostic revision, not a newer upstream Spotify version. The optional `--omit-phone-extensions` switch removes exactly the known five phone extensions for a two-App-ID diagnostic; without it, every original phone entry is preserved.
+The `Watch paired phone audio relay test (unsigned)` GitHub workflow performs these Watch steps and additionally compiles, ad-hoc signs and embeds the opt-in phone observer on a macOS runner. It produces short-lived Actions artifacts, not a public release. Version metadata `3.5.3` matches the existing iPhone container; `1.1-lan-receiver-probe.1` is the Watch diagnostic revision, not a newer upstream Spotify version. The optional `--omit-phone-extensions` switch removes exactly the known five phone extensions for a two-App-ID diagnostic; without it, every original phone entry is preserved.
 
 ## Installation gate
 
@@ -87,7 +95,7 @@ The app tries the visible WatchKit controller and then the root controller. If t
 ## Remaining 1.1 work
 
 - Verify longer local playback and the actual behavior when the display sleeps or the app leaves the foreground. The successful three-second test does not establish either behavior.
-- Establish the actual same-WLAN audio relay: synthetic incremental network playback is confirmed by the tester; usable phone PCM, pairing/access control and pause/seek/route-change handling for real audio remain unverified.
+- Establish the actual same-WLAN audio relay: synthetic incremental network playback is confirmed by the tester; the new paired TLS path and pause/seek/route-change handling for real audio require end-to-end verification.
 - An independent Spotify player with the phone off would still need its own audio source and authentication; that is not provided by the relay design.
 - Validate on newer Watch hardware before claiming Series 5-and-newer compatibility.
 
@@ -102,3 +110,4 @@ The old WatchKit media API is for complete local/downloaded files and short fore
 - [Apple: audio session activation and newer speaker support](https://developer.apple.com/documentation/avfaudio/avaudiosession/activate(options:completionhandler:))
 - [Apple: distributing to registered devices](https://developer.apple.com/documentation/xcode/distributing-your-app-to-registered-devices)
 - [Spotify: Apple Watch support](https://support.spotify.com/us/article/spotify-on-apple-watch/)
+

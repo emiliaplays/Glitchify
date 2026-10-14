@@ -107,7 +107,7 @@ def append_dependency(data):
     return bytes(out)
 
 
-def package(source, helper, output):
+def package(source, helper, output, relay=False):
     source, helper, output = map(Path, (source, helper, output))
     if output.exists() or output.resolve() in (source.resolve(), helper.resolve()):
         raise ValueError('Refusing to overwrite any input or existing output')
@@ -122,6 +122,8 @@ def package(source, helper, output):
             raise ValueError('Unexpected phone identity or existing probe')
         info['GlitchifyPhonePCMProbe'] = True
         info['GlitchifyPhonePCMRevision'] = '1.1-phone-pcm-probe.1'
+        if relay:
+            info['GlitchifyPhoneRelayRevision'] = '1.1-phone-relay-probe.1'
         changed = {CHROMA: append_dependency(original.read(CHROMA)),
                    PHONE_INFO: plistlib.dumps(info, fmt=plistlib.FMT_BINARY)}
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +143,8 @@ def package(source, helper, output):
                 raise ValueError(f'Unexpected content change: {name}')
         if target.read(HELPER) != binary:
             raise ValueError('Helper changed during packaging')
-    report = {'revision': '1.1-phone-pcm-probe.1', 'sha256': sha(output.read_bytes()),
+    report = {'revision': '1.1-phone-relay-probe.1' if relay else '1.1-phone-pcm-probe.1', 'sha256': sha(output.read_bytes()),
+        'relay_capable': relay, 'relay_pairing_bundled': False,
         'helper_sha256': sha(binary), 'source_sha256': sha(source.read_bytes()),
         'changed_entries': list(changed), 'added_entries': [HELPER],
         'unchanged_source_entries': len(names) - len(changed), 'executable_sections_unchanged': True,
@@ -156,5 +159,6 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--helper', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--relay', action='store_true')
     args = parser.parse_args()
-    package(args.source, args.helper, args.output)
+    package(args.source, args.helper, args.output, args.relay)
