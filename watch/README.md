@@ -35,7 +35,7 @@ The `Watch prototype (unsigned)` GitHub workflow performs these steps on a macOS
 
 An unsigned Watch app cannot be installed as-is. The phone and Watch bundles require matching bundle identifiers, signatures and provisioning. If a signing tool changes the phone bundle ID, it must also update the Watch bundle ID and `WKCompanionAppBundleIdentifier` consistently. Development provisioning must include the target devices.
 
-The iPhone app's established Sideloadly installation does **not** establish that Sideloadly will provision/install this new Watch bundle. That path still needs testing. A Mac with Xcode and valid signing is the documented fallback. Do not remove the working phone app merely to troubleshoot Watch provisioning.
+[Sideloadly 0.70.1 explicitly documents](https://sideloadly.io/changelog) retaining embedded WatchKit apps and re-signing them with updated bundle identifiers. It is therefore the first installation path to test using the existing signing account. Successful provisioning, transfer and launch of this particular single-target app on the paired Watch remain unverified. A Mac with Xcode and valid signing is the documented fallback. Do not remove the working phone app merely to troubleshoot Watch provisioning.
 
 ## Hardware checks, after successful signing and installation
 
@@ -45,7 +45,7 @@ The iPhone app's established Sideloadly installation does **not** establish that
 4. Repeat with the iPhone disconnected while leaving Watch networking settings available as appropriate. This local fixture itself needs no network.
 5. Record separately what happens when lowering the wrist or leaving the app. Background playback is not promised by this diagnostic.
 
-If the SwiftUI host exposes no root WatchKit controller, the app reports that error instead of pretending playback started. This must be checked on hardware.
+The app tries the visible WatchKit controller and then the root controller. If the SwiftUI host exposes neither, it reports a presentation error instead of pretending playback started. This must be checked on hardware.
 
 ## Remaining 1.1 work
 
