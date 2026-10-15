@@ -11,6 +11,7 @@ struct WatchTestView: View {
     @AppStorage("GlitchifyLANTestHost") private var serverHost = ""
     @AppStorage("GlitchifyWatchVolume") private var volume = 0.35
     @State private var page = 0
+    @State private var showDiagnostics = false
     @Environment(\.scenePhase) private var scenePhase
     private let accent = Color(red: 0.78, green: 0.62, blue: 1)
 
@@ -107,7 +108,12 @@ struct WatchTestView: View {
                 if !remote.message.isEmpty { Text(remote.message).foregroundStyle(.orange) }
                 Text("iPhone und Watch im selben WLAN. Das iPhone bleibt die Musikquelle. Nur ein Audioempfänger gleichzeitig.").foregroundStyle(.secondary)
                 Text("Hintergrund & Display aus: in dieser Testversion aktiviert; Series-5-Test noch ausstehend.").foregroundStyle(.secondary)
-                DisclosureGroup("Diagnose") {
+                Button {
+                    showDiagnostics.toggle()
+                } label: {
+                    Label("Diagnose", systemImage: showDiagnostics ? "chevron.up" : "chevron.down")
+                }
+                if showDiagnostics {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(lanAudio.detail)
                         TextField("Testserver: IPv4", text: $serverHost)
