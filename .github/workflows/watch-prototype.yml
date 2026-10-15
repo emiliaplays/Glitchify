@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
@@ -34,14 +34,17 @@ jobs:
           clang -std=c11 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined \
             watch/PhoneRelayCoreTests.c -o /tmp/phone-relay-tests
           /tmp/phone-relay-tests
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            watch/PhoneControlProtocolTests.c -o /tmp/phone-control-tests
+          /tmp/phone-control-tests
       - name: Compile opt-in phone output observer
         run: |
           mkdir -p watch/phone-build
           xcrun --sdk iphoneos clang -arch arm64 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
             -miphoneos-version-min=16.1 -std=gnu11 -fobjc-arc -O2 -Wall -Wextra -Werror \
             -dynamiclib -Wl,-install_name,@rpath/GlitchifyPhonePCMProbe.dylib -Wl,-headerpad,0x4000 \
-            -DGLITCHIFY_RELAY=1 -framework Foundation -framework AudioToolbox -framework Network -framework Security \
-            watch/PhonePCMProbe.m watch/PhoneRelayServer.m \
+            -DGLITCHIFY_RELAY=1 -framework Foundation -framework AudioToolbox -framework Network -framework Security -framework MediaPlayer \
+            watch/PhonePCMProbe.m watch/PhoneRelayServer.m watch/PhoneRelayControl.m \
             -o watch/phone-build/GlitchifyPhonePCMProbe.dylib
           codesign --force --sign - watch/phone-build/GlitchifyPhonePCMProbe.dylib
           codesign --verify --strict watch/phone-build/GlitchifyPhonePCMProbe.dylib
@@ -71,7 +74,7 @@ jobs:
             --output watch/dist/Glitchify-1.1-phone-relay-probe-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Glitchify-watch-phone-relay-v2-unsigned
+          name: Glitchify-watch-phone-relay-v3-unsigned
           path: watch/dist/
           if-no-files-found: error
           retention-days: 14
@@ -81,5 +84,16 @@ jobs:
         with:
           name: watch-build-diagnostics
           path: watch-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Render the native Watch player
+        continue-on-error: true
+        timeout-minutes: 8
+        run: python3 watch/preview_watch_ui.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watch-player-ui-preview
+          path: watch/ui-preview/
           if-no-files-found: ignore
           retention-days: 7
