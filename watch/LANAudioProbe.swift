@@ -256,7 +256,7 @@ final class LANAudioProbe: ObservableObject {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: audioSession, queue: nil) { [weak self] notification in
                 let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue ?? 0
                 let interruption = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
-                Task { @MainActor [weak self] in
+                Task<Void, Never> { @MainActor [weak self] in
                     guard let self, self.runID == id else { return }
                     if name == AVAudioSession.routeChangeNotification {
                         self.record("route_changed", code: Int(reason))
@@ -264,7 +264,7 @@ final class LANAudioProbe: ObservableObject {
                             self.finish(id, "Audioausgang getrennt. Bitte erneut verbinden.", failed: true)
                         } else { self.updateRoute() }
                     } else if name == AVAudioSession.interruptionNotification {
-                        self.record("interruption", code: interruption.map(Int.init))
+                        self.record("interruption", code: interruption.map { Int($0) })
                         if interruption == AVAudioSession.InterruptionType.began.rawValue {
                             self.finish(id, "watchOS hat die Audio-Session unterbrochen.", failed: true)
                         }
