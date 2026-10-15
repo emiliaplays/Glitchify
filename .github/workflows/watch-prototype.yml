@@ -26,6 +26,8 @@ jobs:
         run: |
           swiftc watch/LANPCMBuffer.swift watch/LANPCMBufferTests.swift -o /tmp/lan-pcm-tests
           /tmp/lan-pcm-tests
+          swiftc watch/WatchAudioPolicy.swift watch/WatchAudioPolicyTests.swift -o /tmp/watch-audio-policy-tests
+          /tmp/watch-audio-policy-tests
       - name: Phone PCM bounds and format checks
         run: |
           clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
@@ -74,7 +76,7 @@ jobs:
             --output watch/dist/Glitchify-1.1-phone-relay-probe-unsigned.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: Glitchify-watch-phone-relay-v3-unsigned
+          name: Glitchify-watch-phone-relay-v4-unsigned
           path: watch/dist/
           if-no-files-found: error
           retention-days: 14
