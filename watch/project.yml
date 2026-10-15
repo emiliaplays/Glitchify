@@ -1,0 +1,55 @@
+name: GlitchifyWatch
+options:
+  minimumXcodeGenVersion: 2.42.0
+  xcodeVersion: '16.4'
+  deploymentTarget:
+    watchOS: '10.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+targets:
+  GlitchifyWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: '10.0'
+    sources:
+      - path: GlitchifyWatchApp.swift
+      - path: WatchTestView.swift
+      - path: LocalAudioDiagnostic.swift
+      - path: ForegroundAudioProbe.swift
+      - path: LANPCMBuffer.swift
+      - path: LANAudioProbe.swift
+      - path: WatchAudioPolicy.swift
+      - path: PhoneRelayPairing.swift
+      - path: PhoneRemote.swift
+      - path: Generated/Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spotify.client.watchkitapp
+        PRODUCT_NAME: GlitchifyWatch
+        CURRENT_PROJECT_VERSION: '3.5.3'
+        MARKETING_VERSION: '3.5.3'
+        TARGETED_DEVICE_FAMILY: '4'
+        ARCHS: $(ARCHS_STANDARD)
+        ONLY_ACTIVE_ARCH: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: NO
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Glitchify Test
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.spotify.client
+        WKRunsIndependentlyOfCompanionApp: true
+        WKWatchOnly: false
+        GlitchifyPrototypeRevision: 1.1-phone-relay-probe.4
+        UIBackgroundModes: [audio]
+        NSLocalNetworkUsageDescription: Empfängt den von dir gestarteten Audiotest über dein WLAN.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    scheme:
+      gatherCoverageData: false
