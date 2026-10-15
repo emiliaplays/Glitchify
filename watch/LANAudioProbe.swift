@@ -63,7 +63,7 @@ private final class LANAudioResources {
     deinit { player.stop(); engine.stop() }
 }
 
-/// Foreground Watch receiver for synthetic tests or locally paired iPhone audio.
+/// Paired music survives scene changes; watchOS may still interrupt its route.
 @MainActor
 final class LANAudioProbe: ObservableObject {
     @Published private(set) var isRunning = false
@@ -91,6 +91,14 @@ final class LANAudioProbe: ObservableObject {
     private var started = false
     private var playedSamples = 0
     private var phonePairing: PhoneRelayPairing?
+    private var gain: Float = 0.35
+    func setVolume(_ value: Double) {
+        gain = Float(min(1, max(0, value)))
+        audio.player.volume = gain
+    }
+    func sceneBackgrounded() {
+        if phonePairing == nil { stop() }
+    }
 
     deinit {
         poll?.cancel()
@@ -134,8 +142,9 @@ final class LANAudioProbe: ObservableObject {
         playedSamples = 0
         lastReceived = 0
         status = "Audioausgang wird vorbereitet …"
-        detail = "App während des Tests geöffnet lassen."
+        detail = phone ? "WLAN-Musik vom iPhone" : "App während des Tests geöffnet lassen."
         audio = LANAudioResources()
+        audio.player.volume = gain
         do { try audioSession.setCategory(.playback, mode: .default, policy: .default, options: []) }
         catch {
             activating = false
@@ -240,7 +249,7 @@ final class LANAudioProbe: ObservableObject {
                 for index in 0..<count {
                     let word = UInt16(raw[index * 2]) | UInt16(raw[index * 2 + 1]) << 8
                     let sample = Float(Int16(bitPattern: word)) / 32768
-                    samples[index] = phonePairing == nil ? max(-0.2, min(0.2, sample)) : sample * 0.35
+                    samples[index] = phonePairing == nil ? max(-0.2, min(0.2, sample)) : sample
                 }
             }
             queued += 1

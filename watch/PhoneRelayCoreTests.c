@@ -42,7 +42,7 @@ int main(void) {
     GPFormat f = {44100, 2, 32, 4, true, true};
     GPBuffer b[2] = {{left, sizeof left, 1}, {right, sizeof right, 1}};
     GRResampler state = {0};
-    assert(gr_convert(&ring, &state, f, b, 441) == 0);
+    assert(gr_convert(&ring, &state, f, b, 441, false) == 0);
     assert(gr_read(&ring, out, 2400) == 240);
     for (unsigned i = 0; i < 240; ++i) assert(out[i] == 16383);
     // Concurrent production and consumer resynchronization preserve sample order.
@@ -61,10 +61,46 @@ int main(void) {
     state = (GRResampler){0};
     for (unsigned i = 0; i < 441; ++i) {
         GPBuffer one[2] = {{&left[i], 4, 1}, {&right[i], 4, 1}};
-        assert(gr_convert(&ring, &state, f, one, 1) == 0);
+        assert(gr_convert(&ring, &state, f, one, 1, false) == 0);
     }
     assert(gr_read(&ring, out, 2400) == 240);
     for (unsigned i = 0; i < 240; ++i) assert(out[i] == 16383);
+    // Real 48 kHz source: duration and pitch must stay unchanged, L/R distinct.
+    float stereo[960];
+    for (unsigned i = 0; i < 480; ++i) {
+        stereo[2*i] = 0.5f * sinf((float)(2 * 3.141592653589793 * 1000 * i / 48000));
+        stereo[2*i+1] = -0.25f;
+    }
+    f = (GPFormat){48000, 2, 32, 8, true, false};
+    GPBuffer interleaved[1] = {{stereo, sizeof stereo, 2}};
+    state = (GRResampler){0};
+    assert(gr_convert(&ring, &state, f, interleaved, 480, true) == 0);
+    assert(gr_read(&ring, out, 2400) == 960); // exactly 10 ms, no rate drift
+    unsigned crossings = 0;
+    for (unsigned i = 0; i < 480; ++i) {
+        assert(out[2*i] == (int16_t)(stereo[2*i] * 32767));
+        assert(out[2*i+1] == -8191);
+        if (i && out[2*i] > 0 && out[2*(i-1)] <= 0) ++crossings;
+    }
+    assert(crossings == 10); // 1 kHz, not 918.75 Hz from a 44.1/48 mix-up
+    // 44.1 kHz planar source -> 48 kHz stereo; splitting callbacks retains phase.
+    f = (GPFormat){44100, 2, 32, 4, true, true}; state = (GRResampler){0};
+    for (unsigned i = 0; i < 441; ++i) {
+        GPBuffer one[2] = {{&left[i], 4, 1}, {&right[i], 4, 1}};
+        assert(gr_convert(&ring, &state, f, one, 1, true) == 0);
+    }
+    assert(gr_read(&ring, out, 2400) == 960);
+    for (unsigned i = 0; i < 480; ++i) { assert(out[i*2] == 24575); assert(out[i*2+1] == 8191); }
+    // One free sample slot is insufficient: never publish half a stereo frame.
+    for (unsigned i = 0; i < GR_CAPACITY - 1; ++i) assert(gr_write(&ring, 1));
+    priorHead = atomic_load(&ring.head);
+    assert(!gr_write_stereo(&ring, 111, 222)); assert(atomic_load(&ring.head) == priorHead);
+    gr_discard(&ring);
+    // 48 -> 24 kHz Watch compatibility, two input frames per mono output frame.
+    f = (GPFormat){48000, 2, 32, 8, true, false}; state = (GRResampler){0};
+    assert(gr_convert(&ring, &state, f, interleaved, 480, false) == 0);
+    assert(gr_read(&ring, out, 2400) == 240);
+    puts("PASS: stereo separation, 48 kHz pitch/duration, fractional rate conversion, atomic stereo overflow, Watch mono compatibility");
     puts("PASS: relay occupancy, overflow, index wrap, downmix, sample rate and fragmented conversion");
     puts("PASS: concurrent producer/consumer with bounded resynchronization");
 }

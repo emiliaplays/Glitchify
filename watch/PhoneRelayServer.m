@@ -1,5 +1,6 @@
 // Local, explicitly paired TLS relay. No account/DRM or microphone access.
 #import "PhoneRelayServer.h"
+#import "PhoneRelayControl.h"
 #import <Network/Network.h>
 #import <Security/Security.h>
 #include "PhoneRelayCore.h"
@@ -9,7 +10,7 @@
 
 static GRRing ring;
 static GRResampler resampler;
-static atomic_bool capturing, playing, producing;
+static atomic_bool capturing, playing, producing, stereoCapture;
 static atomic_uint epoch;
 static unsigned producerEpoch;
 static atomic_ullong dropped, copied;
@@ -21,16 +22,19 @@ static NSMutableData *requestBytes;
 static unsigned sentChunks, generation;
 static unsigned long long skipped, underflow;
 static double streamStart, nextSend, lastSend;
-static bool authenticated;
+static bool authenticated, stereoClient;
 
 void GRObserve(GPFormat format, const GPBuffer *buffers, uint32_t frames) {
     if (!atomic_load_explicit(&capturing, memory_order_acquire) || format.rate < 24000) return;
     if (atomic_exchange_explicit(&producing, true, memory_order_acquire)) {
         atomic_fetch_add(&dropped, 1); return;
     }
+    if (!atomic_load_explicit(&capturing, memory_order_acquire)) {
+        atomic_store_explicit(&producing, false, memory_order_release); return;
+    }
     unsigned current = atomic_load_explicit(&epoch, memory_order_acquire);
     if (current != producerEpoch) { resampler = (GRResampler){0}; producerEpoch = current; }
-    atomic_fetch_add(&dropped, gr_convert(&ring, &resampler, format, buffers, frames));
+    atomic_fetch_add(&dropped, gr_convert(&ring, &resampler, format, buffers, frames, atomic_load(&stereoCapture)));
     atomic_fetch_add(&copied, frames);
     if (current == atomic_load_explicit(&epoch, memory_order_acquire)) atomic_store(&playing, true);
     atomic_store_explicit(&producing, false, memory_order_release);
@@ -79,14 +83,16 @@ static void sendChunk(unsigned run) {
     if (generation != run || !client || !authenticated) return;
     double elapsed = NSProcessInfo.processInfo.systemUptime - streamStart;
     if (elapsed > 12 * 3600) { closeClient(@"session_limit_reached"); return; }
-    int16_t samples[2400] = {0};
+    unsigned count = stereoClient ? 9600 : 2400; // 100 ms of complete frames
+    int16_t samples[9600] = {0};
     if (atomic_load(&playing)) {
-        skipped += gr_trim(&ring, 7200);
-        underflow += 2400 - gr_read(&ring, samples, 2400);
+        skipped += gr_trim(&ring, count * 3);
+        underflow += count - gr_read(&ring, samples, count);
     } else gr_discard(&ring);
     // HTTP chunk boundaries are removed by URLSession before PCM delivery.
-    NSMutableData *data = [NSMutableData dataWithBytes:"12c0\r\n" length:6];
-    [data appendBytes:samples length:sizeof(samples)];
+    NSMutableData *data = [[[NSString stringWithFormat:@"%x\r\n", count * 2]
+        dataUsingEncoding:NSASCIIStringEncoding] mutableCopy];
+    [data appendBytes:samples length:count * 2];
     [data appendBytes:"\r\n" length:2];
     ++sentChunks;
     sendData(data, run, ^{
@@ -117,8 +123,9 @@ static bool equalToken(NSString *candidate) {
 static bool acceptRequest(NSData *data) {
     NSString *text = [[NSString alloc] initWithData:data encoding:NSASCIIStringEncoding];
     NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\r\n"];
-    if (!text || lines.count < 3 || ![lines[0] isEqualToString:@"GET /glitchify-phone HTTP/1.1"]
-        || ![text hasSuffix:@"\r\n\r\n"]) return false;
+    if (!text || lines.count < 3 || ![text hasSuffix:@"\r\n\r\n"]) return false;
+    bool stereo = [lines[0] isEqualToString:@"GET /glitchify-phone-stereo HTTP/1.1"];
+    if (!stereo && ![lines[0] isEqualToString:@"GET /glitchify-phone HTTP/1.1"]) return false;
     NSString *credential = nil;
     for (NSUInteger i = 1; i < lines.count; ++i) {
         NSString *line = lines[i]; NSRange separator = [line rangeOfString:@":"];
@@ -133,7 +140,32 @@ static bool acceptRequest(NSData *data) {
             credential = [value substringFromIndex:7];
         }
     }
-    return equalToken(credential);
+    if (!equalToken(credential)) return false;
+    stereoClient = stereo;
+    return true;
+}
+
+static void beginStream(unsigned run) {
+    if (generation != run || !client || !authenticated) return;
+    // A prior callback may still be finishing. Switch profile only after it exits;
+    // callbacks recheck capturing under the nonblocking producer guard.
+    if (atomic_load_explicit(&producing, memory_order_acquire)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC), relayQueue, ^{ beginStream(run); });
+        return;
+    }
+    atomic_store(&dropped, 0); atomic_store(&copied, 0); atomic_store(&playing, false);
+    atomic_store(&stereoCapture, stereoClient);
+    atomic_fetch_add(&epoch, 1); gr_discard(&ring);
+    atomic_store_explicit(&capturing, true, memory_order_release);
+    serverStatus = @"streaming";
+    NSString *format = stereoClient ? @"pcm_s16le_48000_stereo" : @"pcm_s16le_24000_mono";
+    NSData *header = [[NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nX-Glitchify-Mode: live\r\nX-Glitchify-Format: %@\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", format]
+        dataUsingEncoding:NSASCIIStringEncoding];
+    streamStart = NSProcessInfo.processInfo.systemUptime;
+    nextSend = lastSend = streamStart;
+    watchDisconnect(run);
+    checkProgress(run);
+    sendData(header, run, ^{ sendChunk(run); });
 }
 
 static void receiveRequest(unsigned run) {
@@ -155,17 +187,7 @@ static void receiveRequest(unsigned run) {
         }
         if (!acceptRequest(requestBytes)) { closeClient(@"request_rejected"); return; }
         authenticated = true; requestBytes = nil; sentChunks = 0; skipped = 0; underflow = 0;
-        atomic_store(&dropped, 0); atomic_store(&copied, 0); atomic_store(&playing, false);
-        atomic_fetch_add(&epoch, 1); gr_discard(&ring);
-        atomic_store_explicit(&capturing, true, memory_order_release);
-        serverStatus = @"streaming";
-        NSData *header = [@"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\nX-Glitchify-Mode: live\r\nX-Glitchify-Format: pcm_s16le_24000_mono\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
-            dataUsingEncoding:NSASCIIStringEncoding];
-        streamStart = NSProcessInfo.processInfo.systemUptime;
-        nextSend = lastSend = streamStart;
-        watchDisconnect(run);
-        checkProgress(run);
-        sendData(header, run, ^{ sendChunk(run); });
+        beginStream(run);
     });
 }
 
@@ -205,6 +227,7 @@ bool GRStartServer(void) {
     sec_identity_t local = identity ? sec_identity_create(identity) : nil;
     CFRelease(imported);
     if (!local) { serverStatus = @"identity_rejected"; return false; }
+    GCStart(local, token);
     relayQueue = dispatch_queue_create("app.glitchify.audio-relay", dispatch_queue_attr_make_with_qos_class(
         DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
     nw_parameters_t parameters = nw_parameters_create_secure_tcp(^(nw_protocol_options_t tls) {
@@ -245,6 +268,7 @@ NSDictionary *GRStatus(void) {
     __block NSDictionary *result;
     void (^read)(void) = ^{
         result = @{@"state": serverStatus, @"host": address ?: @"", @"chunks": @(sentChunks),
+            @"output_rate": @(stereoClient ? 48000 : 24000), @"output_channels": @(stereoClient ? 2 : 1),
             @"frames": @(atomic_load(&copied)), @"dropped": @(atomic_load(&dropped)),
             @"skipped": @(skipped), @"underflow": @(underflow),
             @"capturing": @(atomic_load(&capturing)), @"playing": @(atomic_load(&playing))};

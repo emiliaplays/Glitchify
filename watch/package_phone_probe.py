@@ -123,7 +123,7 @@ def package(source, helper, output, relay=False):
         info['GlitchifyPhonePCMProbe'] = True
         info['GlitchifyPhonePCMRevision'] = '1.1-phone-pcm-probe.1'
         if relay:
-            info['GlitchifyPhoneRelayRevision'] = '1.1-phone-relay-probe.2'
+            info['GlitchifyPhoneRelayRevision'] = '1.1-phone-relay-probe.3'
         changed = {CHROMA: append_dependency(original.read(CHROMA)),
                    PHONE_INFO: plistlib.dumps(info, fmt=plistlib.FMT_BINARY)}
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +143,7 @@ def package(source, helper, output, relay=False):
                 raise ValueError(f'Unexpected content change: {name}')
         if target.read(HELPER) != binary:
             raise ValueError('Helper changed during packaging')
-    report = {'revision': '1.1-phone-relay-probe.2' if relay else '1.1-phone-pcm-probe.1', 'sha256': sha(output.read_bytes()),
+    report = {'revision': '1.1-phone-relay-probe.3' if relay else '1.1-phone-pcm-probe.1', 'sha256': sha(output.read_bytes()),
         'relay_capable': relay, 'relay_pairing_bundled': False,
         'helper_sha256': sha(binary), 'source_sha256': sha(source.read_bytes()),
         'changed_entries': list(changed), 'added_entries': [HELPER],

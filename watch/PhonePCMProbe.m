@@ -1,5 +1,5 @@
-// Opt-in diagnostic for the audited Glitchify phone image. It measures existing
-// output buffers for three minutes; no audio is retained, sent, or modified.
+// Opt-in observer for the audited phone image. Diagnostic mode measures output;
+// relay mode sends bounded PCM only to a locally paired receiver.
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #include <mach/mach.h>
@@ -33,6 +33,7 @@ static unsigned writeCount;
 typedef struct {
     AudioUnit unit; // immutable after publication, never reused or freed
     GPFormat format;
+    double inputRate; // comparison only; post-render buffers use output format
     atomic_bool active, invalid, disposed, processing;
     atomic_ullong callbacks, frames, nonzero, rejected, concurrent, silent, latestPeak;
     bool listenerAdded, propertyAdded; // control mutex only
@@ -96,7 +97,9 @@ static bool readFormat(AudioUnit unit, GPFormat *out) {
     if (!component || AudioComponentGetDescription(component, &desc)
         || desc.componentType != kAudioUnitType_Output || desc.componentSubType != kAudioUnitSubType_RemoteIO) return false;
     AudioStreamBasicDescription f = {0}; UInt32 size = sizeof(f);
-    if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, &size)
+    // Post-render data is the output of bus 0. Its hardware sample rate can differ
+    // from the application's input rate (e.g. 48 kHz output / 44.1 kHz input).
+    if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &f, &size)
         || size != sizeof(f) || f.mFormatID != kAudioFormatLinearPCM || f.mFramesPerPacket != 1
         || f.mBytesPerPacket != f.mBytesPerFrame) return false;
     UInt32 allowed = kAudioFormatFlagIsFloat | kAudioFormatFlagIsSignedInteger
@@ -139,6 +142,9 @@ static Context *attach(AudioUnit unit) {
     if (used == 16) { atomic_fetch_add(&rejectedUnits, 1); return NULL; }
     Context *ctx = &contexts[used++];
     ctx->unit = unit; ctx->format = f;
+    AudioStreamBasicDescription input = {0}; UInt32 inputSize = sizeof(input);
+    if (!AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &input, &inputSize))
+        ctx->inputRate = input.mSampleRate;
     if (AudioUnitAddPropertyListener(unit, kAudioUnitProperty_StreamFormat, formatChanged, ctx)) {
         atomic_store(&ctx->invalid, true); atomic_fetch_add(&listenerErrors, 1); return NULL;
     }
@@ -320,6 +326,7 @@ static void writeSnapshot(void) {
     for (unsigned i = 0; i < used; ++i) {
         Context *ctx = &contexts[i];
         [units addObject:@{@"index": @(i), @"rate": @(ctx->format.rate), @"channels": @(ctx->format.channels),
+            @"format_scope": @"output_bus_0", @"input_rate": @(ctx->inputRate),
             @"bits": @(ctx->format.bits), @"float": @(ctx->format.floating), @"planar": @(ctx->format.planar),
             @"active": @(atomic_load(&ctx->active)), @"invalid": @(atomic_load(&ctx->invalid)),
             @"disposed": @(atomic_load(&ctx->disposed)), @"callbacks": @(atomic_load(&ctx->callbacks)),
