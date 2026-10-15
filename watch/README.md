@@ -9,7 +9,7 @@ Spotify and Eevee run on the iPhone. The native Watch app receives rendered musi
 - Audio background mode is enabled. The receiver belongs to the app independently of its visible page. Real music no longer explicitly stops when the display dims or the app backgrounds. The default audio route policy preserves the tested speaker route. Screen-off/background speaker operation on Series 5 still needs a hardware test.
 - The phone observer uses the output-bus format for post-render samples. Using the input rate could cause slow pitch and excessive backlog trimming when the actual output rate differed.
 - Windows receives separate left/right channels as 48 kHz stereo PCM16. Watch retains 24 kHz downmixed mono. At a 48 kHz source the stereo path does no sample-rate conversion; other rates use a bounded preview-quality resampler.
-- Small Windows receiver: manual iPhone IP at each launch, local pause, volume and stereo WAV recording. No bundled pairing credentials.
+- Small Windows receiver: manual iPhone IP, optional saved address, local pause, volume and stereo WAV recording. No bundled pairing credentials.
 
 ## Hardware evidence
 
@@ -45,7 +45,7 @@ One audio receiver at a time. Stop Watch reception before connecting Windows. Au
 
 ## Windows
 
-Install .NET 8 Windows Desktop Runtime, unpack the Windows ZIP and start Glitchify Audio.exe. Import your own paired IPA before signing, then manually enter the iPhone IP. Pause affects PC output only. Enable WAV recording before connecting. Recording is 48 kHz stereo PCM16, unaffected by PC volume and continuing through local pause. Stop finalizes the file. A bounded buffer may skip old audio after a network stall rather than accumulate delay.
+Install .NET 8 Windows Desktop Runtime, unpack the Windows ZIP and start Glitchify Audio.exe. Import your own paired IPA before signing, then enter the iPhone IP. The optional **IP-Adresse speichern** checkbox restores the address on future launches; otherwise the input starts blank. Pause affects PC output only. Enable WAV recording before connecting. Recording is 48 kHz stereo PCM16, unaffected by PC volume and continuing through local pause. Stop finalizes the file. A bounded buffer may skip old audio after a network stall rather than accumulate delay.
 
 Chroma settings on iPhone remain under **Spotify Settings > Account > Mod Settings**.
 
