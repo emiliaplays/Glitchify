@@ -2,10 +2,18 @@
 
 Spotify and Eevee run on the iPhone. The native Watch app receives rendered music over the same reachable Wi-Fi network and plays it through the Watch's selected output. The phone must be powered on and playing. This is a relay, not standalone Spotify on watchOS.
 
-## Revision .3
+## Revision .4 audio-session test
+
+Revision .3 was installed successfully on Series 5 / watchOS 10.6.2. Speaker music and the app-level Crown gain worked, but music was too quiet even at 100% and the connection ended with URL error -1005 after the display slept. Screen-off playback is **not working in that build**.
+
+Revision .4 replaces the separate app gain with the native Watch system-volume control and removes the second attenuation stage. It requests the long-form policy after activating the current output, falling back to the foreground speaker policy if that output changes or the request fails. This speaker-preserving sequence is experimental: Apple's documented long-form path expects a compatible route and does not establish Series 5 speaker support. The Connection page offers a foreground-only comparison. No microphone, workout session or fictitious activity is used to keep the app alive.
+
+Category/configuration notifications no longer unconditionally stop playback. A lost output, actual interruption or audio-service reset still stops it. A bounded local diagnostic stores at most 64 state/counter events, including system volume, PCM peak/RMS, scene changes and audio policy; it contains no audio, song titles, IP addresses or pairing secrets. These changes require a physical display-off test before any background claim.
+
+## Revision .3 relay and player
 
 - Native Watch player with title/artist, progress, previous/play/pause/next controls, connection page and diagnostics.
-- Digital Crown adjusts local Watch volume from 0 to 100%; the saved value does not change phone volume.
+- Revision .3 used a saved app-level Crown gain; revision .4 uses the Watch system-volume control instead. Neither controls iPhone volume.
 - Audio background mode is enabled. The receiver belongs to the app independently of its visible page. Real music no longer explicitly stops when the display dims or the app backgrounds. The default audio route policy preserves the tested speaker route. Screen-off/background speaker operation on Series 5 still needs a hardware test.
 - The phone observer uses the output-bus format for post-render samples. Using the input rate could cause slow pitch and excessive backlog trimming when the actual output rate differed.
 - Windows receives separate left/right channels as 48 kHz stereo PCM16. Watch retains 24 kHz downmixed mono. At a 48 kHz source the stereo path does no sample-rate conversion; other rates use a bounded preview-quality resampler.

@@ -19,6 +19,7 @@ targets:
       - path: ForegroundAudioProbe.swift
       - path: LANPCMBuffer.swift
       - path: LANAudioProbe.swift
+      - path: WatchAudioPolicy.swift
       - path: PhoneRelayPairing.swift
       - path: PhoneRemote.swift
       - path: Generated/Resources
@@ -45,7 +46,7 @@ targets:
         WKCompanionAppBundleIdentifier: com.spotify.client
         WKRunsIndependentlyOfCompanionApp: true
         WKWatchOnly: false
-        GlitchifyPrototypeRevision: 1.1-phone-relay-probe.3
+        GlitchifyPrototypeRevision: 1.1-phone-relay-probe.4
         UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: Empfängt den von dir gestarteten Audiotest über dein WLAN.
         NSAppTransportSecurity:

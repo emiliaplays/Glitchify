@@ -72,6 +72,8 @@ final class LANAudioProbe: ObservableObject {
     @Published private(set) var route = "Audioausgang noch nicht geprüft."
     @Published private(set) var failed = false
     @Published private(set) var startedBeforeTransferFinished = false
+    @Published private(set) var systemVolume = Double(AVAudioSession.sharedInstance().outputVolume)
+    @Published private(set) var backgroundStatus = "Hintergrund-Audio noch nicht geprüft."
     private static var sessionOwner: UUID?
     private let audioSession = AVAudioSession.sharedInstance()
     private var audio = LANAudioResources()
@@ -91,17 +93,55 @@ final class LANAudioProbe: ObservableObject {
     private var started = false
     private var playedSamples = 0
     private var phonePairing: PhoneRelayPairing?
-    private var gain: Float = 0.35
-    func setVolume(_ value: Double) {
-        gain = Float(min(1, max(0, value)))
-        audio.player.volume = gain
+    private var volumeObserver: NSKeyValueObservation?
+    private var reconfigureTask: Task<Void, Never>?
+    private var renderGeneration = 0
+    private var diagnosticRows: [[String: Any]] = []
+    private var lastDiagnostic = Date.distantPast
+    private var phase = "active"
+    private var peak: Float = 0
+    private var rms: Float = 0
+
+    init() {
+        volumeObserver = audioSession.observe(\.outputVolume, options: [.initial, .new]) { [weak self] session, _ in
+            let volume = Double(session.outputVolume)
+            Task { @MainActor [weak self] in self?.systemVolume = volume }
+        }
     }
-    func sceneBackgrounded() {
-        if phonePairing == nil { stop() }
+
+    func sceneChanged(_ phase: String) {
+        self.phase = phase
+        if runID != nil { record("scene_" + phase) }
+        if phase == "background", phonePairing == nil { stop() }
+    }
+
+    /// Small local counters only: no audio, track metadata, IP or pairing token.
+    private func record(_ event: String, code: Int? = nil) {
+        let state = transfer?.buffer.snapshot()
+        var row: [String: Any] = [
+            "time": Date().timeIntervalSince1970, "event": event, "phase": phase,
+            "policy": audioSession.routeSharingPolicy.rawValue,
+            "outputs": audioSession.currentRoute.outputs.map { $0.portType.rawValue },
+            "system_volume": audioSession.outputVolume, "player_gain": audio.player.volume,
+            "engine_running": audio.engine.isRunning, "player_running": audio.player.isPlaying,
+            "received": state?.received ?? lastReceived, "played_samples": playedSamples,
+            "queued_buffers": queued, "peak": peak, "rms": rms
+        ]
+        if let code { row["code"] = code }
+        diagnosticRows.append(row)
+        if diagnosticRows.count > 64 { diagnosticRows.removeFirst(diagnosticRows.count - 64) }
+        let report: [String: Any] = ["revision": "1.1-phone-relay-probe.4", "events": diagnosticRows,
+                                    "status": status, "background_status": backgroundStatus]
+        if let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+           let data = try? PropertyListSerialization.data(fromPropertyList: report, format: .binary, options: 0) {
+            try? data.write(to: folder.appendingPathComponent("GlitchifyWatchAudio.plist"), options: .atomic)
+        }
+        lastDiagnostic = Date()
     }
 
     deinit {
         poll?.cancel()
+        reconfigureTask?.cancel()
         request?.cancel()
         connection?.invalidateAndCancel()
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
@@ -114,7 +154,7 @@ final class LANAudioProbe: ObservableObject {
         }
     }
 
-    func start(host: String, phone: Bool = false) {
+    func start(host: String, phone: Bool = false, background: Bool = true) {
         guard runID == nil, Self.sessionOwner == nil else { return }
         guard var endpoint = LANPCMBuffer.endpoint(host) else {
             failed = true
@@ -140,11 +180,15 @@ final class LANAudioProbe: ObservableObject {
         startedBeforeTransferFinished = false
         queued = 0
         playedSamples = 0
+        renderGeneration += 1
+        diagnosticRows.removeAll()
         lastReceived = 0
         status = "Audioausgang wird vorbereitet …"
         detail = phone ? "WLAN-Musik vom iPhone" : "App während des Tests geöffnet lassen."
         audio = LANAudioResources()
-        audio.player.volume = gain
+        // System volume is controlled by WKInterfaceVolumeControl. Do not apply
+        // another independent 35% attenuator or interpret it as hardware volume.
+        audio.player.volume = phone ? 1 : 0.35
         do { try audioSession.setCategory(.playback, mode: .default, policy: .default, options: []) }
         catch {
             activating = false
@@ -167,6 +211,27 @@ final class LANAudioProbe: ObservableObject {
                     self.finish(id, self.cancelled ? "WLAN-Test gestoppt." : "Audiofreigabe fehlgeschlagen.", failed: !self.cancelled)
                     return
                 }
+                // Keep the already activated output, then request long-form
+                // execution for real music. This older-speaker compatibility
+                // path is experimental until confirmed on Series 5 hardware.
+                self.backgroundStatus = "Lautsprecher-Modus ohne Hintergrundfreigabe."
+                if phone, background {
+                    let original = self.audioSession.currentRoute.outputs.map { $0.portType }
+                    do {
+                        try self.audioSession.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+                        guard !original.isEmpty,
+                              self.audioSession.currentRoute.outputs.map({ $0.portType }) == original else {
+                            throw NSError(domain: "GlitchifyAudioRoute", code: 1)
+                        }
+                        self.backgroundStatus = "Hintergrundmodus angefordert · Gerätetest erforderlich."
+                        self.record("long_form_requested")
+                    } catch {
+                        self.record("long_form_unavailable", code: (error as NSError).code)
+                        do { try self.audioSession.setCategory(.playback, mode: .default, policy: .default, options: []) }
+                        catch { self.finish(id, "Lautsprecher konnte nicht wiederhergestellt werden.", failed: true); return }
+                        self.backgroundStatus = "Hintergrundmodus auf diesem Ausgang nicht verfügbar."
+                    }
+                }
                 self.connect(id, endpoint: endpoint)
             }
         }
@@ -187,11 +252,34 @@ final class LANAudioProbe: ObservableObject {
             try audio.engine.start()
         } catch { finish(id, "Audio-Engine konnte nicht starten.", failed: true); return }
         for name in [AVAudioSession.routeChangeNotification, AVAudioSession.interruptionNotification,
-                     AVAudioSession.mediaServicesWereResetNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: audioSession, queue: nil) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.finish(id, "WLAN-Test durch Audio-Wechsel unterbrochen.", failed: true) }
+                     AVAudioSession.mediaServicesWereResetNotification, AVAudioSession.mediaServicesWereLostNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: audioSession, queue: nil) { [weak self] notification in
+                let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue ?? 0
+                let interruption = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
+                Task { @MainActor [weak self] in
+                    guard let self, self.runID == id else { return }
+                    if name == AVAudioSession.routeChangeNotification {
+                        self.record("route_changed", code: Int(reason))
+                        if WatchAudioPolicy.mustStop(routeReason: reason, hasOutput: !self.audioSession.currentRoute.outputs.isEmpty) {
+                            self.finish(id, "Audioausgang getrennt. Bitte erneut verbinden.", failed: true)
+                        } else { self.updateRoute() }
+                    } else if name == AVAudioSession.interruptionNotification {
+                        self.record("interruption", code: interruption.map(Int.init))
+                        if interruption == AVAudioSession.InterruptionType.began.rawValue {
+                            self.finish(id, "watchOS hat die Audio-Session unterbrochen.", failed: true)
+                        }
+                    } else {
+                        self.record("media_services_lost_or_reset")
+                        self.finish(id, "watchOS-Audiodienst neu gestartet. Bitte erneut verbinden.", failed: true)
+                    }
+                }
             })
         }
+        observers.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+            object: audio.engine, queue: nil) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.reconfigure(id) }
+            })
+        record("engine_started")
         let delegate = LANTransfer(pairing: phonePairing)
         transfer = delegate
         let config = URLSessionConfiguration.ephemeral
@@ -225,10 +313,33 @@ final class LANAudioProbe: ObservableObject {
         }
     }
 
+    private func updateRoute() {
+        let outputs = audioSession.currentRoute.outputs
+        route = outputs.contains { $0.portType == .builtInSpeaker }
+            ? "Eingebauter Watch-Lautsprecher" : "Anderer Audioausgang"
+    }
+
+    private func reconfigure(_ id: UUID) {
+        guard runID == id, reconfigureTask == nil else { return }
+        reconfigureTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+            guard let self, self.runID == id, let format = self.format else { return }
+            defer { self.reconfigureTask = nil }
+            self.record("engine_configuration_changed")
+            self.renderGeneration += 1
+            self.audio.player.stop(); self.audio.engine.stop()
+            self.queued = 0; self.started = false
+            self.audio.engine.disconnectNodeOutput(self.audio.player)
+            self.audio.engine.connect(self.audio.player, to: self.audio.engine.mainMixerNode, format: format)
+            do { try self.audio.engine.start() }
+            catch { self.finish(id, "Audioausgang konnte nicht neu gestartet werden.", failed: true) }
+        }
+    }
+
     private func drain(_ id: UUID) {
         guard runID == id, let transfer, let format else { return }
         let snapshot = transfer.buffer.snapshot()
-        if let failure = snapshot.failure { finish(id, failure, failed: true); return }
+        if let failure = snapshot.failure { record("network_or_format_failure"); finish(id, failure, failed: true); return }
         let now = Date()
         if snapshot.received != lastReceived { lastReceived = snapshot.received; lastArrival = now }
         if now > deadline || (!snapshot.finished && now.timeIntervalSince(lastArrival) > 8) {
@@ -245,17 +356,22 @@ final class LANAudioProbe: ObservableObject {
                 finish(id, "Audiopuffer konnte nicht erstellt werden.", failed: true); return
             }
             pcm.frameLength = AVAudioFrameCount(count)
+            var maximum: Float = 0
+            var energy: Double = 0
             data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 for index in 0..<count {
                     let word = UInt16(raw[index * 2]) | UInt16(raw[index * 2 + 1]) << 8
                     let sample = Float(Int16(bitPattern: word)) / 32768
                     samples[index] = phonePairing == nil ? max(-0.2, min(0.2, sample)) : sample
+                    maximum = max(maximum, abs(sample)); energy += Double(sample) * Double(sample)
                 }
             }
+            peak = maximum; rms = Float(sqrt(energy / Double(max(1, count))))
             queued += 1
+            let render = renderGeneration
             audio.player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self, self.runID == id else { return }
+                    guard let self, self.runID == id, self.renderGeneration == render else { return }
                     self.queued = max(0, self.queued - 1)
                     self.playedSamples += count
                 }
@@ -266,10 +382,12 @@ final class LANAudioProbe: ObservableObject {
             startedBeforeTransferFinished = !snapshot.finished
             audio.player.play()
             status = "WLAN-Audio läuft."
+            record("playback_started")
         }
         detail = "Empfangen: \(snapshot.received / 1000) kB · Gespielt: \(playedSamples / 24_000) s\n"
             + (startedBeforeTransferFinished ? "Start während der Übertragung bestätigt." : "Warte auf Audio …")
         if snapshot.skipped > 0 { detail += "\nNach WLAN-Verzögerung neu synchronisiert." }
+        if now.timeIntervalSince(lastDiagnostic) >= 5 { record("playing") }
         let final = transfer.buffer.snapshot()
         if final.finished, final.queued == 0, queued == 0 {
             let verified = startedBeforeTransferFinished && (phonePairing != nil ? playedSamples > 0 : playedSamples == 480_000)
@@ -286,7 +404,11 @@ final class LANAudioProbe: ObservableObject {
 
     private func finish(_ id: UUID, _ text: String, failed: Bool) {
         guard runID == id else { return }
+        status = text
+        record("stopping", code: failed ? 1 : 0)
         runID = nil
+        reconfigureTask?.cancel(); reconfigureTask = nil
+        renderGeneration += 1
         poll?.cancel(); poll = nil
         request?.cancel(); request = nil
         connection?.invalidateAndCancel(); connection = nil

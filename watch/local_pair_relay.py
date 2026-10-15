@@ -73,7 +73,7 @@ def pair(source, output, host=''):
         info = plistlib.loads(old.read(PHONE + 'Info.plist'))
         wi = plistlib.loads(old.read(WATCH + 'Info.plist'))
         revision = info.get('GlitchifyPhoneRelayRevision')
-        if revision not in {'1.1-phone-relay-probe.1', '1.1-phone-relay-probe.2', '1.1-phone-relay-probe.3'} or wi.get('GlitchifyPrototypeRevision') != revision:
+        if revision not in {'1.1-phone-relay-probe.1', '1.1-phone-relay-probe.2', '1.1-phone-relay-probe.3', '1.1-phone-relay-probe.4'} or wi.get('GlitchifyPrototypeRevision') != revision:
             raise ValueError('Expected matching supported phone and Watch relay revisions')
         info['NSLocalNetworkUsageDescription'] = 'Sendet auf deine Anfrage Musik an deine gekoppelte Watch oder deinen PC im selben WLAN.'
         if host:

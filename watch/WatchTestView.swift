@@ -1,4 +1,19 @@
 import SwiftUI
+import WatchKit
+
+/// The Crown changes the Watch's actual audio volume, not a second app gain.
+struct WatchSystemVolume: WKInterfaceObjectRepresentable {
+    var focused: Bool
+    func makeWKInterfaceObject(context: Context) -> WKInterfaceVolumeControl {
+        WKInterfaceVolumeControl(origin: .local)
+    }
+    func updateWKInterfaceObject(_ control: WKInterfaceVolumeControl, context: Context) {
+        if focused { control.focus() } else { control.resignFocus() }
+    }
+    static func dismantleWKInterfaceObject(_ control: WKInterfaceVolumeControl, coordinator: ()) {
+        control.resignFocus()
+    }
+}
 
 @MainActor
 struct WatchTestView: View {
@@ -9,7 +24,7 @@ struct WatchTestView: View {
     @AppStorage("GlitchifyPhoneRelayHost") private var phoneHost =
         Bundle.main.object(forInfoDictionaryKey: "GlitchifyPhoneRelayHost") as? String ?? ""
     @AppStorage("GlitchifyLANTestHost") private var serverHost = ""
-    @AppStorage("GlitchifyWatchVolume") private var volume = 0.35
+    @AppStorage("GlitchifyWatchBackgroundAudio") private var backgroundAudio = true
     @State private var page = 0
     @State private var showDiagnostics = false
     @Environment(\.scenePhase) private var scenePhase
@@ -21,16 +36,14 @@ struct WatchTestView: View {
             connection.tag(1)
         }
         .tabViewStyle(.page(indexDisplayMode: .automatic))
-        .onAppear { lanAudio.setVolume(volume) }
-        .onChange(of: volume) { lanAudio.setVolume($0) }
         .onChange(of: lanAudio.isRunning) { running in
             if !running { remote.stop() }
         }
         .onChange(of: scenePhase) { phase in
             remote.foreground = phase == .active
+            lanAudio.sceneChanged(phase == .active ? "active" : phase == .inactive ? "inactive" : "background")
             if phase == .background {
                 streamAudio.stopForBackground()
-                lanAudio.sceneBackgrounded()
             }
         }
         // The app owns receiver/remote. Leaving a page does not stop real music.
@@ -50,7 +63,7 @@ struct WatchTestView: View {
                     Circle().fill(LinearGradient(colors: [accent.opacity(0.7), .indigo.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
                     Circle().stroke(.white.opacity(0.2), lineWidth: 1).padding(6)
                     Image(systemName: "waveform").font(.system(size: 23, weight: .medium)).foregroundStyle(.white)
-                }.frame(height: max(30, min(54, size.size.height * 0.22)))
+                }.frame(height: max(28, min(44, size.size.height * 0.18)))
                     .accessibilityHidden(true)
                 Text(remote.title).font(.system(size: 14, weight: .semibold)).lineLimit(2).minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
@@ -69,16 +82,15 @@ struct WatchTestView: View {
                         .disabled(streamAudio.isRunning || audio.isPresenting)
                 }
                 HStack(spacing: 4) {
-                    Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    Text("\(Int((volume * 100).rounded())) %").monospacedDigit()
-                    Text("· Crown").foregroundStyle(.secondary)
+                    WatchSystemVolume(focused: page == 0 && scenePhase == .active && lanAudio.isRunning)
+                        .frame(width: 44, height: 30)
+                    Text("\(Int((lanAudio.systemVolume * 100).rounded())) %").monospacedDigit()
+                    Text("Crown").foregroundStyle(.secondary)
                 }.font(.system(size: 10)).foregroundStyle(accent)
-                    .accessibilityLabel("Watch-Lautstärke \(Int((volume * 100).rounded())) Prozent. Mit Digital Crown ändern.")
+                    .accessibilityLabel("Watch-Systemlautstärke \(Int((lanAudio.systemVolume * 100).rounded())) Prozent. Mit Digital Crown ändern.")
             }
             .padding(.horizontal, 6)
             .frame(width: size.size.width, height: size.size.height, alignment: .center)
-            .focusable()
-            .digitalCrownRotation($volume, from: 0, through: 1, by: 0.05, sensitivity: .low, isContinuous: false, isHapticFeedbackEnabled: true)
         }
     }
 
@@ -107,7 +119,9 @@ struct WatchTestView: View {
                 Text(lanAudio.route).foregroundStyle(.secondary)
                 if !remote.message.isEmpty { Text(remote.message).foregroundStyle(.orange) }
                 Text("iPhone und Watch im selben WLAN. Das iPhone bleibt die Musikquelle. Nur ein Audioempfänger gleichzeitig.").foregroundStyle(.secondary)
-                Text("Hintergrund & Display aus: in dieser Testversion aktiviert; Series-5-Test noch ausstehend.").foregroundStyle(.secondary)
+                Toggle("Hintergrund-Audio testen", isOn: $backgroundAudio).disabled(lanAudio.isRunning)
+                Text(lanAudio.backgroundStatus).foregroundStyle(.secondary)
+                Text("Testversion: Display-aus-Wiedergabe noch nicht bestätigt.").foregroundStyle(.secondary)
                 Button {
                     showDiagnostics.toggle()
                 } label: {
@@ -136,8 +150,7 @@ struct WatchTestView: View {
     private func connect() {
         phoneHost = phoneHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard LANPCMBuffer.endpoint(phoneHost) != nil else { page = 1; return }
-        lanAudio.setVolume(volume)
-        lanAudio.start(host: phoneHost, phone: true)
+        lanAudio.start(host: phoneHost, phone: true, background: backgroundAudio)
         if lanAudio.isRunning { remote.start(host: phoneHost); page = 0 }
     }
 }
